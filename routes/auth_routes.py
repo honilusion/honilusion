@@ -2,11 +2,14 @@
 
 from fastapi import APIRouter, Request, Response, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import asyncio
 import logging
 import os
+import secrets
+import uuid
 
+import bcrypt
 import json
 import re
 from pathlib import Path
@@ -832,5 +835,92 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         if result.get("exit_code", 1) == 0:
             return {"ok": True, "message": "Connection successful"}
         return {"ok": False, "message": (result.get("error") or "Connection failed")[:300]}
+
+    # ---- Personal API tokens (non-admin, self-service) ----
+
+    class CreateTokenRequest(BaseModel):
+        label: str
+        scopes: List[str] = ["chat"]
+
+    def _invalidate_token_cache(request: Request):
+        try:
+            invalidator = getattr(request.app.state, "invalidate_token_cache", None)
+            if invalidator:
+                invalidator()
+        except Exception:
+            pass
+
+    @router.get("/tokens")
+    async def list_my_tokens(request: Request):
+        """List API tokens owned by the current user."""
+        user = _get_current_user(request)
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        from core.database import get_db_session, ApiToken as _ApiToken
+        with get_db_session() as db:
+            tokens = db.query(_ApiToken).filter(_ApiToken.owner == user).order_by(_ApiToken.created_at.desc()).all()
+            return [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "token_prefix": t.token_prefix,
+                    "scopes": [s.strip() for s in (t.scopes or "chat").split(",") if s.strip()],
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
+                }
+                for t in tokens
+            ]
+
+    @router.post("/tokens")
+    async def create_my_token(body: CreateTokenRequest, request: Request):
+        """Create a new personal API token for the current user."""
+        user = _get_current_user(request)
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        label = body.label.strip()[:100]
+        if not label:
+            raise HTTPException(400, "Label is required")
+        from core.database import get_db_session, ApiToken as _ApiToken
+        from routes.api_token_routes import _normalize_scopes
+        scope_list = _normalize_scopes(body.scopes)
+        raw_token = "ody_" + secrets.token_urlsafe(32)
+        token_hash = bcrypt.hashpw(raw_token.encode(), bcrypt.gensalt()).decode()
+        token_id = str(uuid.uuid4())[:8]
+        with get_db_session() as db:
+            db.add(_ApiToken(
+                id=token_id,
+                owner=user,
+                name=label,
+                token_hash=token_hash,
+                token_prefix=raw_token[:8],
+                scopes=",".join(scope_list),
+                is_active=True,
+            ))
+        _invalidate_token_cache(request)
+        return {
+            "id": token_id,
+            "name": label,
+            "token": raw_token,
+            "token_prefix": raw_token[:8],
+            "scopes": scope_list,
+        }
+
+    @router.delete("/tokens/{token_id}")
+    async def revoke_my_token(token_id: str, request: Request):
+        """Revoke a personal API token. Only the token owner can revoke it."""
+        user = _get_current_user(request)
+        if not user:
+            raise HTTPException(401, "Not authenticated")
+        from core.database import get_db_session, ApiToken as _ApiToken
+        with get_db_session() as db:
+            token = db.query(_ApiToken).filter(
+                _ApiToken.id == token_id,
+                _ApiToken.owner == user,
+            ).first()
+            if not token:
+                raise HTTPException(404, "Token not found")
+            db.delete(token)
+        _invalidate_token_cache(request)
+        return {"status": "deleted"}
 
     return router

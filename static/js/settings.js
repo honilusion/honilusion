@@ -2303,6 +2303,108 @@ function initAccount() {
     render2FA();
   }
 
+  // ── Personal API Tokens ──
+  (function initAccountTokens() {
+    const listEl = el('settings-tok-list');
+    const formEl = el('settings-tok-form');
+    const revealEl = el('settings-tok-reveal');
+    const newBtn = el('settings-tok-new-btn');
+    const cancelBtn = el('settings-tok-cancel-btn');
+    const createBtn = el('settings-tok-create-btn');
+    const labelInput = el('settings-tok-label');
+    const msgEl = el('settings-tok-msg');
+    const tokValue = el('settings-tok-value');
+    const copyBtn = el('settings-tok-copy-btn');
+    if (!listEl) return;
+
+    async function loadMyTokens() {
+      listEl.innerHTML = '<div style="font-size:11px;opacity:0.4;">Loading…</div>';
+      try {
+        const res = await fetch('/api/auth/tokens', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('Failed');
+        const tokens = await res.json();
+        if (!tokens.length) {
+          listEl.innerHTML = '<div style="font-size:11px;opacity:0.4;padding:4px 0;">No tokens yet.</div>';
+          return;
+        }
+        listEl.innerHTML = tokens.map(t => {
+          const date = t.created_at ? new Date(t.created_at).toLocaleDateString() : '';
+          const scopes = (t.scopes || []).join(', ') || 'chat';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);" data-tok-row="${esc(t.id)}">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:12px;font-weight:600;">${esc(t.name)}</div>
+              <div style="font-size:10px;opacity:0.5;">${esc(t.token_prefix)}… · ${esc(scopes)}${date ? ' · Created ' + esc(date) : ''}</div>
+            </div>
+            <button class="admin-btn-delete" data-tok-revoke="${esc(t.id)}" style="font-size:11px;padding:3px 8px;">Revoke</button>
+          </div>`;
+        }).join('');
+        listEl.querySelectorAll('[data-tok-revoke]').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Revoke this token? Any scripts using it will stop working.')) return;
+            try {
+              await fetch(`/api/auth/tokens/${btn.dataset.tokRevoke}`, { method: 'DELETE', credentials: 'same-origin' });
+              revealEl.style.display = 'none';
+              loadMyTokens();
+            } catch (_) {}
+          });
+        });
+      } catch (_) {
+        listEl.innerHTML = '<div style="font-size:11px;color:var(--red);">Failed to load tokens</div>';
+      }
+    }
+
+    loadMyTokens();
+
+    if (newBtn) newBtn.addEventListener('click', () => {
+      revealEl.style.display = 'none';
+      formEl.style.display = '';
+      labelInput.value = '';
+      if (msgEl) msgEl.textContent = '';
+      labelInput.focus();
+    });
+
+    if (cancelBtn) cancelBtn.addEventListener('click', () => {
+      formEl.style.display = 'none';
+      if (msgEl) msgEl.textContent = '';
+    });
+
+    if (createBtn) createBtn.addEventListener('click', async () => {
+      const label = labelInput.value.trim();
+      if (!label) { if (msgEl) { msgEl.textContent = 'Label is required'; msgEl.style.color = 'var(--red)'; } return; }
+      createBtn.disabled = true;
+      if (msgEl) msgEl.textContent = '';
+      try {
+        const res = await fetch('/api/auth/tokens', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label, scopes: ['chat'] }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed');
+        formEl.style.display = 'none';
+        tokValue.textContent = data.token;
+        revealEl.style.display = '';
+        loadMyTokens();
+      } catch (e) {
+        if (msgEl) { msgEl.textContent = e.message; msgEl.style.color = 'var(--red)'; }
+      } finally {
+        createBtn.disabled = false;
+      }
+    });
+
+    if (copyBtn && tokValue) {
+      const COPY_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      const CHECK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(tokValue.textContent).then(() => {
+          copyBtn.innerHTML = CHECK_ICON;
+          copyBtn.style.color = 'var(--accent,var(--red))';
+          setTimeout(() => { copyBtn.innerHTML = COPY_ICON; copyBtn.style.color = ''; }, 1600);
+        });
+      });
+    }
+  })();
+
   // Logout
   const logoutBtn = el('settings-logout-btn');
   if (logoutBtn) {
