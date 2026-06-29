@@ -284,6 +284,20 @@ FastMCP DNS rebinding protection must be disabled:
 - [x] Persistent API tokens (self-service, Settings → Account)
 - [x] Configurable MCP keywords per integration (Feature 2)
   - See commit: feat: configurable MCP keywords and always-inject per integration
+- [x] Auto fileprep processing for chat file uploads (Feature 3)
+  - See commit: feat: auto fileprep processing for chat file uploads + PyMuPDF in Dockerfile
+
+### feat: auto fileprep processing for chat file uploads (commit 7dbb4e7)
+Files changed:
+- `core/database.py` — added `auto_fileprep` (Boolean, default False) column to `McpServer` model; added `_migrate_add_mcp_auto_fileprep_column()` and registered in `init_db()`
+- `routes/mcp_routes.py` — `add_server()` accepts `auto_fileprep` Form param; `list_servers()` includes it in response; `toggle_server()` PATCH also accepts and saves it
+- `static/js/settings.js` — in the edit form for an existing MCP server, shows "Auto fileprep uploads" toggle only when `srv.name === 'fileprep'`; "Save keywords" button also sends `auto_fileprep`
+- `src/chat_handler.py` — added `_is_auto_fileprep_enabled()` (DB lookup), `_fileprep_file()` (async httpx POST to `http://172.21.0.1:7111/process`), and intercept in `preprocess_message()` between file resolution loop and attachment_meta loop; on success writes `<stem>_fileprepped.md` to `UPLOAD_DIR/.fileprep/` and updates `files_by_id` entry (path, name, mime) — then rest of the pipeline treats it as a text/markdown document via `_process_text_file()`
+- `Dockerfile` — added `&& pip install --no-cache-dir pymupdf` to the requirements RUN step (was optional-only before)
+
+**fileprep endpoint:** `POST http://172.21.0.1:7111/process` — field name `file`, returns plain Markdown. Supports: pdf, docx, xlsx, csv, md, txt, png, jpg, jpeg, tiff, bmp.
+
+**Intercept point:** `src/chat_handler.py:preprocess_message()` — between the `resolve_upload()` loop and the `attachment_meta.append()` loop. The updated `files_by_id` dict flows through to the vision check and `build_user_content`, so prepped files skip image/vision paths and land in `_process_text_file()` (text/markdown mime + .md extension both satisfied).
 
 ---
 
