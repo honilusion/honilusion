@@ -24,6 +24,13 @@ sudo docker compose up -d
 ```
 Container name may change after rm — check with `docker ps`.
 
+**Alternative for Python route changes (no sudo needed):** Hot-copy the updated `.py` into the container, then send SIGHUP to uvicorn (PID 1 inside the container) to reload:
+```bash
+docker cp routes/auth_routes.py <container_name>:/app/routes/auth_routes.py
+docker exec <container_name> kill -HUP 1
+```
+SIGHUP causes uvicorn to gracefully reload workers, picking up the new bytecode. This survives the permission-denied restart constraint and avoids a full image rebuild.
+
 ### CRITICAL: Static files are baked into the Docker image
 `static/` (JS, HTML, CSS) is NOT volume-mounted — it's copied into the image at build time.
 Editing files on disk does NOT update what the container serves.
@@ -87,6 +94,12 @@ every load, so a hard refresh is usually enough — but only once the container 
   - `created_at` — `DateTime` via `TimestampMixin` (also adds `updated_at`)
   - `last_used_at` — `DateTime`, nullable, set by auth middleware on token auth
 - **API token admin routes:** `routes/api_token_routes.py` — admin-facing CRUD, has `_normalize_scopes()`
+- **Auth helpers:** `src/auth_helpers.py` — shared helpers; key functions:
+  - `get_current_user(request)` — reads `request.state.current_user` (set by middleware); returns `"api"` for Bearer token callers, NOT the real owner
+  - `effective_user(request)` — **use this for owner-scoped routes**; for Bearer tokens returns `request.state.api_token_owner` (the human who minted the token); for cookie sessions identical to `get_current_user`
+  - `require_user(request)` — raises 403 if called by a Bearer token caller (API tokens must use scope-aware routes)
+- **Bearer token middleware** (`app.py` ~line 361): validates `Authorization: Bearer ody_*` headers; on success sets `request.state.current_user = "api"`, `request.state.api_token = True`, `request.state.api_token_owner = <real_username>`, `request.state.api_token_scopes = [...]`. The `"api"` pseudo-user is intentional — keeps token callers out of cookie/session routes that check `request.state.current_user` directly.
+- **Personal token endpoints must use `effective_user()`**: `GET/POST/DELETE /api/auth/tokens` in `routes/auth_routes.py` use `effective_user(request)` (not `_get_current_user()`). This is the only way those endpoints work with Bearer token auth. The local `_get_current_user()` helper inside that router reads only session cookies and always returns `None` for Bearer callers.
 - **Agent loop:** `src/agent_loop.py`
   - **Line ~648:** `_MCP_KEYWORDS` frozenset — gates MCP tool schema injection for local models
   - API models (Gemini, Claude, GPT) get ALL MCP schemas unconditionally
@@ -213,6 +226,14 @@ Tokens are bcrypt-hashed, stored in SQLite `api_tokens` table (`ApiToken` model)
 **Debugging lesson:** After the HTML/JS were committed, the card still didn't appear because the
 Docker container was built before the commit and `static/` is baked into the image. Fixed by
 `docker cp`-ing the updated files into the running container. See Docker section above.
+
+### fix: token endpoints use effective_user for Bearer token compatibility (commit on honilusion-main)
+Files changed:
+- `routes/auth_routes.py` — added `from src.auth_helpers import effective_user` import; replaced `_get_current_user(request)` with `effective_user(request)` in `list_my_tokens`, `create_my_token`, and `revoke_my_token`
+
+**Root cause:** `_get_current_user()` is a closure inside `setup_auth_routes()` that reads the session cookie directly. Bearer token callers have no cookie, so it always returned `None` → 401. The Bearer token middleware sets `request.state.current_user = "api"` (a pseudo-user) and stores the real owner on `request.state.api_token_owner`. `effective_user()` knows to read the owner field for Bearer callers.
+
+**Deployment lesson:** Python route changes require reloading the interpreter — `docker cp` alone is not enough. Hot-restart via `docker exec <container> kill -HUP 1` sends SIGHUP to uvicorn (PID 1 in the container), triggering a graceful worker reload without needing `sudo`. Verified working.
 
 ---
 

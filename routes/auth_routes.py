@@ -16,6 +16,7 @@ from pathlib import Path
 
 from core.atomic_io import atomic_write_json, atomic_write_text
 from core.auth import AuthManager, RESERVED_USERNAMES, SetAdminResult, TOKEN_TTL
+from src.auth_helpers import effective_user
 from src.constants import DEEP_RESEARCH_DIR, MEMORY_FILE, PASSWORD_MIN_LENGTH, SKILLS_DIR
 from src.rate_limiter import RateLimiter
 from src.settings_scrub import scrub_settings
@@ -853,7 +854,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
     @router.get("/tokens")
     async def list_my_tokens(request: Request):
         """List API tokens owned by the current user."""
-        user = _get_current_user(request)
+        user = effective_user(request)
         if not user:
             raise HTTPException(401, "Not authenticated")
         from core.database import get_db_session, ApiToken as _ApiToken
@@ -874,7 +875,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
     @router.post("/tokens")
     async def create_my_token(body: CreateTokenRequest, request: Request):
         """Create a new personal API token for the current user."""
-        user = _get_current_user(request)
+        user = effective_user(request)
         if not user:
             raise HTTPException(401, "Not authenticated")
         label = body.label.strip()[:100]
@@ -908,7 +909,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
     @router.delete("/tokens/{token_id}")
     async def revoke_my_token(token_id: str, request: Request):
         """Revoke a personal API token. Only the token owner can revoke it."""
-        user = _get_current_user(request)
+        user = effective_user(request)
         if not user:
             raise HTTPException(401, "Not authenticated")
         from core.database import get_db_session, ApiToken as _ApiToken
