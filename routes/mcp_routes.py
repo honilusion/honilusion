@@ -152,6 +152,7 @@ def setup_mcp_routes(mcp_manager: McpManager):
                     "needs_oauth": needs_oauth,
                     "keywords": srv.keywords or "",
                     "always_inject": bool(srv.always_inject),
+                    "auto_fileprep": bool(srv.auto_fileprep),
                 })
             return result
         finally:
@@ -170,6 +171,7 @@ def setup_mcp_routes(mcp_manager: McpManager):
         oauth_config: str = Form(None),
         keywords: str = Form(None),
         always_inject: str = Form("false"),
+        auto_fileprep: str = Form("false"),
     ):
         """Add a new MCP server config and attempt connection. Admin-only:
         registering a stdio server is equivalent to executing arbitrary
@@ -239,6 +241,7 @@ def setup_mcp_routes(mcp_manager: McpManager):
                 logger.warning(f"Failed to write OAuth file: {e}")
 
         parsed_always_inject = str(always_inject).lower() == "true"
+        parsed_auto_fileprep = str(auto_fileprep).lower() == "true"
         parsed_keywords = (keywords or "").strip() or None
 
         # Save to DB
@@ -256,6 +259,7 @@ def setup_mcp_routes(mcp_manager: McpManager):
                 oauth_config=json.dumps(parsed_oauth_config) if parsed_oauth_config else None,
                 keywords=parsed_keywords,
                 always_inject=parsed_always_inject,
+                auto_fileprep=parsed_auto_fileprep,
             )
             db.add(srv)
             db.commit()
@@ -336,8 +340,9 @@ def setup_mcp_routes(mcp_manager: McpManager):
         is_enabled: str = Form(None),
         keywords: str = Form(None),
         always_inject: str = Form(None),
+        auto_fileprep: str = Form(None),
     ):
-        """Enable/disable an MCP server, or update keywords/always_inject."""
+        """Enable/disable an MCP server, or update keywords/always_inject/auto_fileprep."""
         require_admin(request)
         db = SessionLocal()
         try:
@@ -353,6 +358,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
                 srv.keywords = keywords.strip() or None
             if always_inject is not None:
                 srv.always_inject = str(always_inject).lower() == "true"
+            if auto_fileprep is not None:
+                srv.auto_fileprep = str(auto_fileprep).lower() == "true"
             db.commit()
 
             if toggling_enabled:

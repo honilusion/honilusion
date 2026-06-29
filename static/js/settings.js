@@ -5190,6 +5190,12 @@ async function initUnifiedIntegrations() {
                 <label class="admin-switch" style="flex-shrink:0;"><input type="checkbox" id="uf-mcp-edit-always-inject" ${srv.always_inject ? 'checked' : ''}><span class="admin-slider"></span></label>
                 <span style="font-size:11px;opacity:0.55;margin-left:8px;">Inject into every local model request</span>
               </div>
+              ${srv.name === 'fileprep' ? `
+              <div class="settings-row" style="align-items:center;">
+                <label class="settings-label" title="Auto-process chat file uploads through fileprep service before injecting content">Auto fileprep uploads</label>
+                <label class="admin-switch" style="flex-shrink:0;"><input type="checkbox" id="uf-mcp-edit-auto-fileprep" ${srv.auto_fileprep ? 'checked' : ''}><span class="admin-slider"></span></label>
+                <span style="font-size:11px;opacity:0.55;margin-left:8px;">Process uploads via fileprep before injection</span>
+              </div>` : ''}
               <div style="text-align:right;">
                 <button class="admin-btn-sm" id="uf-mcp-save-kw">Save keywords</button>
                 <span id="uf-mcp-kw-msg" style="font-size:11px;margin-left:6px;"></span>
@@ -5204,11 +5210,12 @@ async function initUnifiedIntegrations() {
             </div>
             <div id="uf-mcp-tools-panel"></div>
           </div>`;
-        // Save keywords/always_inject
+        // Save keywords/always_inject/auto_fileprep
         el('uf-mcp-save-kw').addEventListener('click', async () => {
           const fd = new FormData();
           fd.append('keywords', (el('uf-mcp-edit-keywords')?.value || '').trim());
           fd.append('always_inject', el('uf-mcp-edit-always-inject')?.checked ? 'true' : 'false');
+          if (srv.name === 'fileprep') fd.append('auto_fileprep', el('uf-mcp-edit-auto-fileprep')?.checked ? 'true' : 'false');
           const kwMsg = el('uf-mcp-kw-msg');
           try {
             const r = await fetch(`/api/mcp/servers/${srv.id}`, { method: 'PATCH', body: fd, credentials: 'same-origin' });

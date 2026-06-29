@@ -65,7 +65,8 @@ WORKDIR /app
 ARG INSTALL_OPTIONAL=false
 COPY requirements.txt requirements-optional.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.txt; fi
+    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.txt; fi \
+    && pip install --no-cache-dir pymupdf
 
 # Pre-install the patched basicsr/gfpgan/facexlib wheels built in the
 # realesrgan-wheels stage (--no-deps keeps the image lean — torch & friends are

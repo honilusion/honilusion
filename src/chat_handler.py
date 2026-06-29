@@ -3,7 +3,10 @@
 import os
 import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+import httpx
 
 from fastapi import HTTPException
 
@@ -27,6 +30,44 @@ from src.youtube_handler import (
 )
 
 logger = logging.getLogger(__name__)
+
+_FILEPREP_URL = "http://172.21.0.1:7111/process"
+_FILEPREP_SUPPORTED_EXTS = frozenset({
+    ".pdf", ".docx", ".xlsx", ".csv", ".md", ".txt",
+    ".png", ".jpg", ".jpeg", ".tiff", ".bmp",
+})
+
+
+def _is_auto_fileprep_enabled() -> bool:
+    """Return True if the 'fileprep' MCP server exists, is enabled, and has auto_fileprep set."""
+    try:
+        from core.database import SessionLocal, McpServer
+        db = SessionLocal()
+        try:
+            srv = (
+                db.query(McpServer)
+                .filter(McpServer.name == "fileprep", McpServer.is_enabled == True)  # noqa: E712
+                .first()
+            )
+            return bool(srv and getattr(srv, "auto_fileprep", False))
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
+async def _fileprep_file(path: str, filename: str) -> str | None:
+    """POST file to fileprep /process; return Markdown string or None on any failure."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(_FILEPREP_URL, files={"file": (filename, data)})
+        if r.status_code == 200:
+            return r.text
+    except Exception as e:
+        logger.debug("fileprep call failed for %s: %s", filename, e)
+    return None
 
 
 class ChatHandler:
@@ -154,6 +195,30 @@ class ChatHandler:
                 fi = self.upload_handler.resolve_upload(att_id, owner=owner)
                 if fi:
                     files_by_id[att_id] = fi
+
+            # Auto fileprep: if enabled, process supported uploads through the
+            # fileprep service before building attachment metadata. On any
+            # failure the original file info is kept (silent fallback).
+            if _is_auto_fileprep_enabled():
+                _fp_dir = os.path.join(self.upload_handler.upload_dir, ".fileprep")
+                os.makedirs(_fp_dir, exist_ok=True)
+                for att_id in list(files_by_id.keys()):
+                    fi = files_by_id[att_id]
+                    name = fi.get("name") or fi.get("original_name") or fi.get("id", "")
+                    _, ext = os.path.splitext(name.lower())
+                    if ext not in _FILEPREP_SUPPORTED_EXTS:
+                        continue
+                    md_text = await _fileprep_file(fi["path"], name)
+                    if not md_text:
+                        continue
+                    new_name = f"{Path(name).stem}_fileprepped.md"
+                    cache_path = os.path.join(_fp_dir, att_id + ".md")
+                    try:
+                        with open(cache_path, "w", encoding="utf-8") as _f:
+                            _f.write(md_text)
+                        files_by_id[att_id] = {**fi, "path": cache_path, "name": new_name, "mime": "text/markdown"}
+                    except Exception as _e:
+                        logger.debug("fileprep cache write failed for %s: %s", att_id, _e)
 
             for att_id in effective_att_ids:
                 fi = files_by_id.get(att_id)
