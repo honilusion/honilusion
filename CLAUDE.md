@@ -24,12 +24,15 @@ sudo docker compose up -d
 ```
 Container name may change after rm — check with `docker ps`.
 
-**Alternative for Python route changes (no sudo needed):** Hot-copy the updated `.py` into the container, then send SIGHUP to uvicorn (PID 1 inside the container) to reload:
+**Alternative for Python route changes (no sudo needed):** Hot-copy the updated `.py` into the container, then restart the container:
 ```bash
 docker cp routes/auth_routes.py <container_name>:/app/routes/auth_routes.py
-docker exec <container_name> kill -HUP 1
+docker exec <container_name> kill -TERM 1   # graceful shutdown; Docker restarts with unless-stopped
+# or: docker stop <container_name> && docker start <container_name>
 ```
-SIGHUP causes uvicorn to gracefully reload workers, picking up the new bytecode. This survives the permission-denied restart constraint and avoids a full image rebuild.
+**WARNING:** SIGHUP (`kill -HUP 1`) does NOT reload Python modules in uvicorn 0.49 (non-reload mode). It only works if the container has `--reload` in its startup command. For route signature changes, a container restart is required. `docker start <name>` re-uses the same container (preserving docker cp files) without needing sudo.
+
+**Route function body changes only** (not signature changes) can sometimes be picked up after SIGHUP because Python may re-evaluate the function at call time — but this is unreliable. Always use `docker start` after `docker cp` for Python changes.
 
 ### CRITICAL: Static files are baked into the Docker image
 `static/` (JS, HTML, CSS) is NOT volume-mounted — it's copied into the image at build time.
@@ -207,12 +210,12 @@ users must NOT have `.admin-only`.
 
 ## Honilusion Customizations (what we changed)
 
-### agent_loop.py — MCP Keywords patch
+### agent_loop.py — MCP Keywords patch (superseded by Feature 2)
 Added fileprep-related keywords to `_MCP_KEYWORDS` at line ~648:
 ```
 "preprocess", "fileprep", "library", "pdf", "docx"
 ```
-**This patch breaks on upstream merges** — Feature 2 (configurable MCP keywords) is intended to replace this hardcoded fix.
+These are now redundant (can be set per-server via UI) but kept as fallback. Feature 2 below replaces the need for hardcoded entries here.
 
 ### feat: persistent API tokens (commit 9c9ed08)
 Files changed:
@@ -233,7 +236,23 @@ Files changed:
 
 **Root cause:** `_get_current_user()` is a closure inside `setup_auth_routes()` that reads the session cookie directly. Bearer token callers have no cookie, so it always returned `None` → 401. The Bearer token middleware sets `request.state.current_user = "api"` (a pseudo-user) and stores the real owner on `request.state.api_token_owner`. `effective_user()` knows to read the owner field for Bearer callers.
 
-**Deployment lesson:** Python route changes require reloading the interpreter — `docker cp` alone is not enough. Hot-restart via `docker exec <container> kill -HUP 1` sends SIGHUP to uvicorn (PID 1 in the container), triggering a graceful worker reload without needing `sudo`. Verified working.
+**Deployment lesson (revised):** SIGHUP does NOT reload Python modules in uvicorn 0.49 (non-reload mode). Use `docker exec <container> kill -TERM 1` followed by `docker start <container>` to restart with updated Python code. The container retains `docker cp`'d files across restarts since it's the same container filesystem.
+
+### feat: configurable MCP keywords and always-inject per integration
+Files changed:
+- `core/database.py` — added `keywords` (Text, nullable) and `always_inject` (Boolean, default False) columns to `McpServer` model; added `_migrate_add_mcp_keyword_columns()` and registered it in `init_db()`
+- `routes/mcp_routes.py` — `add_server()` accepts `keywords` and `always_inject` Form params and saves them; `list_servers()` includes them in response; `toggle_server()` PATCH endpoint made `is_enabled` optional and also accepts `keywords`/`always_inject` for updating
+- `src/agent_loop.py` — added `_load_mcp_server_inject_config()` function that reads enabled MCP servers from DB; updated local model MCP injection logic to: merge per-server keywords into effective keyword set, always inject tools from servers with `always_inject=True`, otherwise fall back to keyword matching
+- `static/js/settings.js` — Add MCP Server form now has "Trigger keywords" text input and "Always inject" toggle; existing server management view shows and saves these fields via "Save keywords" button
+
+**Schema:** `McpServer.keywords` is a comma-separated string (e.g. `"preprocess, pdf, fileprep"`), stored and parsed at agent-loop call time. `McpServer.always_inject` is a boolean; if true, the server's tools are always sent to local models regardless of keyword matching.
+
+**Agent loop logic (local models only, ~line 2577 in agent_loop.py):**
+- Load DB config once per round via `_load_mcp_server_inject_config()`
+- `always_inject` servers are included unconditionally
+- If any keyword in `_MCP_KEYWORDS ∪ {per-server keywords}` appears in the last user message, ALL MCP schemas are injected
+- Otherwise only `always_inject` server schemas are sent
+- API models (Gemini, Claude, GPT, etc.) are unaffected — they still get all schemas
 
 ---
 
@@ -263,10 +282,8 @@ FastMCP DNS rebinding protection must be disabled:
 ## Planned Features (honilusion-main)
 
 - [x] Persistent API tokens (self-service, Settings → Account)
-- [ ] Configurable MCP keywords per integration (Feature 2)
-  - Add `keywords` field and `always_inject` checkbox to MCP server config UI
-  - Merge integration keywords into `_MCP_KEYWORDS` at runtime
-  - Replaces the hardcoded `agent_loop.py` patch
+- [x] Configurable MCP keywords per integration (Feature 2)
+  - See commit: feat: configurable MCP keywords and always-inject per integration
 
 ---
 

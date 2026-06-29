@@ -150,6 +150,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
                     "auth_url": status.get("auth_url"),
                     "has_oauth": oauth_cfg is not None,
                     "needs_oauth": needs_oauth,
+                    "keywords": srv.keywords or "",
+                    "always_inject": bool(srv.always_inject),
                 })
             return result
         finally:
@@ -166,6 +168,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
         url: str = Form(None),
         oauth_file: str = Form(None),
         oauth_config: str = Form(None),
+        keywords: str = Form(None),
+        always_inject: str = Form("false"),
     ):
         """Add a new MCP server config and attempt connection. Admin-only:
         registering a stdio server is equivalent to executing arbitrary
@@ -234,6 +238,9 @@ def setup_mcp_routes(mcp_manager: McpManager):
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to write OAuth file: {e}")
 
+        parsed_always_inject = str(always_inject).lower() == "true"
+        parsed_keywords = (keywords or "").strip() or None
+
         # Save to DB
         db = SessionLocal()
         try:
@@ -247,6 +254,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
                 url=url,
                 is_enabled=True,
                 oauth_config=json.dumps(parsed_oauth_config) if parsed_oauth_config else None,
+                keywords=parsed_keywords,
+                always_inject=parsed_always_inject,
             )
             db.add(srv)
             db.commit()
@@ -321,8 +330,14 @@ def setup_mcp_routes(mcp_manager: McpManager):
             db.close()
 
     @router.patch("/servers/{server_id}")
-    async def toggle_server(server_id: str, request: Request, is_enabled: str = Form(...)):
-        """Enable or disable an MCP server."""
+    async def toggle_server(
+        server_id: str,
+        request: Request,
+        is_enabled: str = Form(None),
+        keywords: str = Form(None),
+        always_inject: str = Form(None),
+    ):
+        """Enable/disable an MCP server, or update keywords/always_inject."""
         require_admin(request)
         db = SessionLocal()
         try:
@@ -330,26 +345,33 @@ def setup_mcp_routes(mcp_manager: McpManager):
             if not srv:
                 raise HTTPException(404, "Server not found")
 
-            enabled = str(is_enabled).lower() == "true"
-            srv.is_enabled = enabled
+            toggling_enabled = is_enabled is not None
+            if toggling_enabled:
+                new_enabled = str(is_enabled).lower() == "true"
+                srv.is_enabled = new_enabled
+            if keywords is not None:
+                srv.keywords = keywords.strip() or None
+            if always_inject is not None:
+                srv.always_inject = str(always_inject).lower() == "true"
             db.commit()
 
-            if enabled:
-                args = json.loads(srv.args) if srv.args else []
-                env = json.loads(srv.env) if srv.env else {}
-                await mcp_manager.connect_server(
-                    server_id=server_id,
-                    name=srv.name,
-                    transport=srv.transport,
-                    command=srv.command,
-                    args=args,
-                    env=env,
-                    url=srv.url,
-                )
-            else:
-                await mcp_manager.disconnect_server(server_id)
+            if toggling_enabled:
+                if new_enabled:
+                    args = json.loads(srv.args) if srv.args else []
+                    env = json.loads(srv.env) if srv.env else {}
+                    await mcp_manager.connect_server(
+                        server_id=server_id,
+                        name=srv.name,
+                        transport=srv.transport,
+                        command=srv.command,
+                        args=args,
+                        env=env,
+                        url=srv.url,
+                    )
+                else:
+                    await mcp_manager.disconnect_server(server_id)
 
-            return {"id": server_id, "is_enabled": enabled}
+            return {"id": server_id, "is_enabled": srv.is_enabled}
         finally:
             db.close()
 

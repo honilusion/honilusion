@@ -57,6 +57,27 @@ def _load_mcp_disabled_map() -> Dict[str, set]:
         db.close()
     return disabled_map
 
+
+def _load_mcp_server_inject_config() -> Dict[str, Dict]:
+    """Return {server_id: {keywords: [str, ...], always_inject: bool}} from DB."""
+    from core.database import McpServer, SessionLocal
+    cfg: Dict[str, Dict] = {}
+    db = SessionLocal()
+    try:
+        for srv in db.query(McpServer).filter(McpServer.is_enabled == True).all():
+            kws: List[str] = []
+            if srv.keywords:
+                kws = [k.strip().lower() for k in srv.keywords.split(",") if k.strip()]
+            cfg[srv.id] = {
+                "keywords": kws,
+                "always_inject": bool(srv.always_inject),
+            }
+    except Exception:
+        pass
+    finally:
+        db.close()
+    return cfg
+
 # System prompt that tells the LLM about available tools.
 # Always injected — the LLM decides whether to use them.
 _AGENT_PREAMBLE = """\
@@ -2553,10 +2574,29 @@ async def stream_agent_loop(
                     and t.get("name") not in disabled_tools
                 ]
         else:
-            # Local: only MCP schemas when message suggests MCP tool usage
+            # Local: only MCP schemas when message suggests MCP tool usage.
+            # Per-server keywords and always_inject augment the global keyword set.
             _last_content = _last_user.lower()
-            _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
-            all_tool_schemas = mcp_schemas if (_wants_mcp and mcp_schemas) else []
+            _srv_inject_cfg = _load_mcp_server_inject_config()
+            _always_inject_ids = {sid for sid, c in _srv_inject_cfg.items() if c.get("always_inject")}
+            _extra_kw: set = set()
+            for c in _srv_inject_cfg.values():
+                _extra_kw.update(c.get("keywords", []))
+            _effective_kw = _MCP_KEYWORDS | _extra_kw
+            _wants_mcp = any(kw in _last_content for kw in _effective_kw)
+            if not mcp_schemas:
+                all_tool_schemas = []
+            elif _wants_mcp:
+                all_tool_schemas = mcp_schemas
+            elif _always_inject_ids:
+                # Only inject tools from always_inject servers
+                all_tool_schemas = [
+                    s for s in mcp_schemas
+                    if len((s.get("function", {}).get("name", "") or "").split("__")) > 1
+                    and (s.get("function", {}).get("name", "") or "").split("__")[1] in _always_inject_ids
+                ]
+            else:
+                all_tool_schemas = []
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]

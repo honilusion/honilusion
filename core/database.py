@@ -422,6 +422,8 @@ class McpServer(TimestampMixin, Base):
     oauth_config = Column(Text, nullable=True)   # JSON: provider, keys_file, token_file, scopes
     disabled_tools = Column(Text, nullable=True)  # JSON array of tool names to hide from LLM
     oauth_tokens = Column(EncryptedText, nullable=True)  # JSON {tokens, client_info} for generic MCP OAuth, encrypted at rest
+    keywords = Column(Text, nullable=True)        # comma-separated trigger words for local model injection
+    always_inject = Column(Boolean, default=False)  # inject this server's tools on every local model request
 
 
 class Comparison(TimestampMixin, Base):
@@ -1497,6 +1499,22 @@ def _migrate_add_disabled_tools():
     except Exception as e:
         logging.getLogger(__name__).warning(f"disabled_tools migration: {e}")
 
+def _migrate_add_mcp_keyword_columns():
+    """Add keywords and always_inject columns to mcp_servers if missing."""
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(mcp_servers)"))]
+            if "keywords" not in cols:
+                conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN keywords TEXT"))
+                logging.getLogger(__name__).info("Added keywords column to mcp_servers")
+            if "always_inject" not in cols:
+                conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN always_inject BOOLEAN DEFAULT 0"))
+                logging.getLogger(__name__).info("Added always_inject column to mcp_servers")
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"mcp keyword columns migration: {e}")
+
+
 def _migrate_add_mcp_oauth_tokens_column():
     """Add oauth_tokens column to mcp_servers table if missing.
 
@@ -1821,6 +1839,7 @@ def init_db():
     _migrate_add_task_automation_columns()
     _migrate_add_disabled_tools()
     _migrate_add_mcp_oauth_tokens_column()
+    _migrate_add_mcp_keyword_columns()
     _migrate_add_task_v2_columns()
     _migrate_add_notifications_enabled()
     _migrate_drop_ping_notes_tasks()

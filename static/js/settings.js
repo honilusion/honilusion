@@ -5180,6 +5180,21 @@ async function initUnifiedIntegrations() {
               <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
               <span style="font-size:11px;opacity:0.7">${statusText}</span>
             </div>
+            <div class="settings-col" style="margin-bottom:8px;">
+              <div class="settings-row">
+                <label class="settings-label" title="Comma-separated words that trigger this server's tools for local models">Trigger keywords</label>
+                <input id="uf-mcp-edit-keywords" class="settings-input" placeholder="e.g. preprocess, pdf, fileprep" value="${esc(srv.keywords || '')}">
+              </div>
+              <div class="settings-row" style="align-items:center;">
+                <label class="settings-label" title="Inject this server's tools into every local model request">Always inject</label>
+                <label class="admin-switch" style="flex-shrink:0;"><input type="checkbox" id="uf-mcp-edit-always-inject" ${srv.always_inject ? 'checked' : ''}><span class="admin-slider"></span></label>
+                <span style="font-size:11px;opacity:0.55;margin-left:8px;">Inject into every local model request</span>
+              </div>
+              <div style="text-align:right;">
+                <button class="admin-btn-sm" id="uf-mcp-save-kw">Save keywords</button>
+                <span id="uf-mcp-kw-msg" style="font-size:11px;margin-left:6px;"></span>
+              </div>
+            </div>
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;justify-content:flex-end;">
               <span id="uf-mcp-msg" style="font-size:11px;flex:1;margin-right:8px"></span>
               ${srv.needs_oauth ? `<a href="/api/mcp/oauth/authorize/${srv.id}" target="_blank" class="admin-btn-add" style="background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));text-decoration:none;font-weight:600;">Authorize</a>` : ''}
@@ -5189,6 +5204,19 @@ async function initUnifiedIntegrations() {
             </div>
             <div id="uf-mcp-tools-panel"></div>
           </div>`;
+        // Save keywords/always_inject
+        el('uf-mcp-save-kw').addEventListener('click', async () => {
+          const fd = new FormData();
+          fd.append('keywords', (el('uf-mcp-edit-keywords')?.value || '').trim());
+          fd.append('always_inject', el('uf-mcp-edit-always-inject')?.checked ? 'true' : 'false');
+          const kwMsg = el('uf-mcp-kw-msg');
+          try {
+            const r = await fetch(`/api/mcp/servers/${srv.id}`, { method: 'PATCH', body: fd, credentials: 'same-origin' });
+            kwMsg.textContent = r.ok ? 'Saved' : 'Failed';
+            kwMsg.style.color = r.ok ? 'var(--green, #98c379)' : 'var(--red)';
+            setTimeout(() => { kwMsg.textContent = ''; }, 2000);
+          } catch (_) { kwMsg.textContent = 'Error'; kwMsg.style.color = 'var(--red)'; }
+        });
         // Reconnect
         el('uf-mcp-reconnect').addEventListener('click', async () => {
           const msg = el('uf-mcp-msg'); msg.textContent = 'Reconnecting...';
@@ -5247,6 +5275,15 @@ async function initUnifiedIntegrations() {
             <div id="uf-mcp-sse-fields" style="display:none;flex-direction:column;gap:6px;">
               <div class="settings-row"><label class="settings-label">URL</label><input id="uf-mcp-url" class="settings-input" placeholder="http://localhost:3001/sse"></div>
             </div>
+            <div class="settings-row" style="margin-top:6px;">
+              <label class="settings-label" title="Comma-separated words that trigger this server's tools for local models">Trigger keywords</label>
+              <input id="uf-mcp-keywords" class="settings-input" placeholder="e.g. preprocess, pdf, fileprep">
+            </div>
+            <div class="settings-row" style="align-items:center;">
+              <label class="settings-label" title="Inject this server's tools into every local model request regardless of keywords">Always inject</label>
+              <label class="admin-switch" style="flex-shrink:0;"><input type="checkbox" id="uf-mcp-always-inject"><span class="admin-slider"></span></label>
+              <span style="font-size:11px;opacity:0.55;margin-left:8px;">Inject into every local model request</span>
+            </div>
             <div class="settings-row" style="margin-top:10px;align-items:center;justify-content:flex-end;gap:6px;">
               <span id="uf-mcp-msg" style="font-size:11px;flex:1;margin-right:8px"></span>
               <button class="admin-btn-add" id="uf-mcp-save" style="background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));font-weight:600;">Save</button>
@@ -5278,6 +5315,8 @@ async function initUnifiedIntegrations() {
         } else {
           fd.append('url', el('uf-mcp-url').value);
         }
+        fd.append('keywords', (el('uf-mcp-keywords')?.value || '').trim());
+        fd.append('always_inject', el('uf-mcp-always-inject')?.checked ? 'true' : 'false');
         const saveBtn = el('uf-mcp-save'), cancelBtn = el('uf-mcp-cancel');
         const _origLabel = saveBtn.textContent;
         _setBtnLoading(saveBtn, true, 'Saving…'); if (cancelBtn) cancelBtn.disabled = true;
