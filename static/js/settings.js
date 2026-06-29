@@ -13,6 +13,7 @@ import { bindMenuDismiss } from './escMenuStack.js';
 let initialized = false;
 let modalEl = null;
 let _authPolicy = { password_min_length: 8 };
+let _reloadAccountTokens = null;
 
 function el(id) { return document.getElementById(id); }
 function esc(s) { return uiModule.esc(s); }
@@ -41,6 +42,7 @@ function initTabs() {
       document.body.classList.toggle('settings-appearance-open', tab === 'appearance');
       syncAppearanceOpacity(tab === 'appearance');
       if (tab === 'ai') refreshAiModelEndpoints();
+      if (tab === 'account' && typeof _reloadAccountTokens === 'function') _reloadAccountTokens();
     });
   });
 }
@@ -2403,6 +2405,8 @@ function initAccount() {
         });
       });
     }
+
+    _reloadAccountTokens = loadMyTokens;
   })();
 
   // Logout
