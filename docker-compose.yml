@@ -1,10 +1,12 @@
 services:
+  
   odysseus:
     build: .
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
     volumes:
       - ${APP_DATA_DIR:-./data}:/app/data:z
+      - /home/olusion/odysseus-workspace:/workspace
       - ${APP_LOGS_DIR:-./logs}:/app/logs:z
       # Cookbook remote-server SSH identity. Odysseus can generate a key here;
       # add the shown public key to each remote server's authorized_keys.
@@ -118,7 +120,7 @@ services:
         fi
         exec /usr/local/searxng/entrypoint.sh
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8082:8080"
     volumes:
       - searxng-data:/etc/searxng
       - ./config/searxng/settings.yml:/tmp/searxng-settings.yml.template:ro,z

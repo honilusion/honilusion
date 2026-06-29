@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "speakturbo-tts": {
+      "source": "emzod/speak-turbo",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "3c8f8ebfb196e2dbe483a9613de8fb6647098aae0b548efeb72f48aa8d34cceb"
+    },
+    "tts": {
+      "source": "NoizAI/skills",
+      "sourceType": "github",
+      "skillPath": "skills/tts/SKILL.md",
+      "computedHash": "ccfb890d9f797a1316ca9d6528f9c240bc0a287a2c0cb09758b41d8a8a0e18df"
+    }
+  }
+}
