@@ -802,6 +802,10 @@ app.include_router(setup_companion_routes())
 from routes.hub import setup_hub_routes
 app.include_router(setup_hub_routes())
 
+from routes.hub.hub_mcp import get_hub_mcp_app as _get_hub_mcp_app, _hub_mcp as _hub_mcp_server
+_hub_mcp_asgi = _get_hub_mcp_app()
+app.mount("/api/hub/mcp", _hub_mcp_asgi)
+
 @app.get("/hub", include_in_schema=False)
 @app.get("/hub/", include_in_schema=False)
 async def hub_redirect(request: Request):
@@ -919,11 +923,12 @@ async def runtime_info() -> Dict[str, object]:
 @asynccontextmanager
 async def _lifespan(app):
     """Modern lifespan context manager replacing deprecated @app.on_event."""
-    # ── STARTUP ──
-    await _startup_event()
-    yield
-    # ── SHUTDOWN ──
-    await _shutdown_event()
+    async with _hub_mcp_server.session_manager.run():
+        # ── STARTUP ──
+        await _startup_event()
+        yield
+        # ── SHUTDOWN ──
+        await _shutdown_event()
 
 app.router.lifespan_context = _lifespan
 

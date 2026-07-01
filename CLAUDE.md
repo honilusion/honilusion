@@ -334,6 +334,37 @@ Tools:
 - `project_list()` — list all projects
 - `project_get(name)` — get project by name
 
+### MCP HTTP endpoint (routes/hub/hub_mcp.py)
+FastMCP HTTP server exposing Hub tools for external MCP clients (e.g. claude.ai custom connectors).
+
+**Source:** `routes/hub/hub_mcp.py` — FastMCP instance with all 6 hub tools.
+
+**Mount:** `app.mount("/api/hub/mcp", _hub_mcp_asgi)` in `app.py` (after hub REST routes at line ~807).
+
+**Lifespan:** `_hub_mcp_server.session_manager.run()` wrapped around `_startup_event`/`_shutdown_event` in `_lifespan` (app.py ~line 926). Required because the `StreamableHTTPSessionManager` uses an anyio task group that must be started before the first request.
+
+**Endpoint URL (for claude.ai connector):** `https://odysseus.olusion.net/api/hub/mcp/`
+(Starlette Mount semantics require a trailing slash — the canonical endpoint URL is with `/`.)
+
+**Auth:** Odysseus Bearer token middleware handles `Authorization: Bearer ody_...` validation before the request reaches the FastMCP sub-app. Invalid tokens receive 401 from the middleware; unauthenticated requests receive 401. No additional auth logic is needed inside the FastMCP app.
+
+**Transport:** FastMCP streamable HTTP, stateless mode (`stateless_http=True`) — each request is independent, no session state. DNS rebinding protection disabled (`TransportSecuritySettings(enable_dns_rebinding_protection=False)`). Content-Type validation patched out (`TransportSecurityMiddleware._validate_content_type = lambda self, ct: True`).
+
+**Test:**
+```bash
+# Should return 406 "Client must accept text/event-stream" (valid MCP error — server is live)
+curl -s --max-time 10 http://localhost:7000/api/hub/mcp/ \
+  -H "Cookie: odysseus_session=<session-token>" \
+  -H "Accept: application/json"
+
+# Should return initialize result as SSE event
+curl -s --max-time 10 -X POST http://localhost:7000/api/hub/mcp/ \
+  -H "Cookie: odysseus_session=<session-token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'
+```
+
 ### Static GUI
 Single-page dashboard at `/hub/` (served via `GET /hub/` route in app.py as FileResponse).
 Source: `static/hub/index.html` — vanilla JS, dark theme matching Odysseus style.
@@ -350,6 +381,8 @@ Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (betwe
   - See commit: feat: configurable MCP keywords and always-inject per integration
 - [x] Auto fileprep processing for chat file uploads (Feature 3)
   - See commit: feat: auto fileprep processing for chat file uploads + PyMuPDF in Dockerfile
+- [x] Hub FastMCP HTTP endpoint for claude.ai connector (Feature 4)
+  - See commit: feat: Hub FastMCP HTTP endpoint for claude.ai connector
 
 ### feat: auto fileprep processing for chat file uploads (commit 7dbb4e7)
 Files changed:
