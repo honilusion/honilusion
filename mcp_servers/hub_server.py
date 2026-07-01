@@ -116,6 +116,43 @@ async def list_tools() -> list[Tool]:
                 "required": ["name"],
             },
         ),
+        Tool(
+            name="canon_get",
+            description="Get a canon fact for a specific entity within a series.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "series": {"type": "string", "description": "Canon series name (e.g. 'characters')"},
+                    "entity": {"type": "string", "description": "Entity name within the series"},
+                },
+                "required": ["series", "entity"],
+            },
+        ),
+        Tool(
+            name="canon_set",
+            description="Create or update a canon fact for an entity in a series.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "series": {"type": "string", "description": "Canon series name"},
+                    "entity": {"type": "string", "description": "Entity name within the series"},
+                    "fact": {"type": "string", "description": "The canon fact text"},
+                    "source_note": {"type": "string", "description": "Optional source or attribution note"},
+                },
+                "required": ["series", "entity", "fact"],
+            },
+        ),
+        Tool(
+            name="canon_list",
+            description="List all canon facts for a series.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "series": {"type": "string", "description": "Canon series name to list"},
+                },
+                "required": ["series"],
+            },
+        ),
     ]
 
 
@@ -123,7 +160,7 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _ensure_init()
 
-    from core.database import SessionLocal, HubMessage, HubProject
+    from core.database import SessionLocal, HubMessage, HubProject, HubCanon
 
     if name == "inbox_send":
         from_agent = arguments.get("from_agent", "").strip()
@@ -263,6 +300,84 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 f"Created: {proj.created_at.isoformat() if proj.created_at else '?'}",
                 f"Updated: {proj.updated_at.isoformat() if proj.updated_at else '?'}",
             ]
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "canon_get":
+        series = arguments.get("series", "").strip()
+        entity = arguments.get("entity", "").strip()
+        if not series or not entity:
+            return _text("Error: series and entity are required")
+        db = SessionLocal()
+        try:
+            row = db.query(HubCanon).filter(HubCanon.series == series, HubCanon.entity == entity).first()
+            if not row:
+                return _text(f"No canon fact found for {series}/{entity}")
+            lines = [
+                f"Series: {row.series}",
+                f"Entity: {row.entity}",
+                f"Fact: {row.fact}",
+            ]
+            if row.source_note:
+                lines.append(f"Source: {row.source_note}")
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "canon_set":
+        series = arguments.get("series", "").strip()
+        entity = arguments.get("entity", "").strip()
+        fact = arguments.get("fact", "").strip()
+        source_note = arguments.get("source_note")
+        if not series or not entity or not fact:
+            return _text("Error: series, entity, and fact are required")
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            row = db.query(HubCanon).filter(HubCanon.series == series, HubCanon.entity == entity).first()
+            if row:
+                row.fact = fact
+                if source_note is not None:
+                    row.source_note = source_note
+                row.updated_at = now
+                db.commit()
+                return _text(f"Canon fact updated for {series}/{entity}")
+            row = HubCanon(
+                id=_short_id(),
+                series=series,
+                entity=entity,
+                fact=fact,
+                source_note=source_note,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+            db.commit()
+            return _text(f"Canon fact created for {series}/{entity}")
+        except Exception as e:
+            return _text(f"Error setting canon fact: {e}")
+        finally:
+            db.close()
+
+    elif name == "canon_list":
+        series = arguments.get("series", "").strip()
+        if not series:
+            return _text("Error: series is required")
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(HubCanon)
+                .filter(HubCanon.series == series)
+                .order_by(HubCanon.entity)
+                .all()
+            )
+            if not rows:
+                return _text(f"No canon facts found for series '{series}'")
+            lines = [f"Canon facts for '{series}' ({len(rows)}):\n"]
+            for r in rows:
+                src = f" [{r.source_note}]" if r.source_note else ""
+                lines.append(f"- {r.entity}: {r.fact}{src}")
             return _text("\n".join(lines))
         finally:
             db.close()

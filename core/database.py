@@ -1777,6 +1777,19 @@ class HubMessage(TimestampMixin, Base):
     )
 
 
+class HubCanon(TimestampMixin, Base):
+    """Agent Hub canon store — shared facts organized by series."""
+    __tablename__ = "hub_canon"
+
+    id          = Column(String, primary_key=True, index=True)
+    series      = Column(String, nullable=False)
+    entity      = Column(String, nullable=False)
+    fact        = Column(Text, nullable=False)
+    source_note = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_hub_canon_series_entity", "series", "entity", unique=True),
+    )
 
 
 
@@ -1846,6 +1859,36 @@ def _migrate_seed_email_account():
             logging.getLogger(__name__).info("Seeded email_accounts 'Default' from settings.json")
     except Exception as e:
         logging.getLogger(__name__).warning(f"seed email account migration: {e}")
+
+
+def _migrate_add_hub_canon_table():
+    """Create hub_canon table if it doesn't exist."""
+    try:
+        with engine.connect() as conn:
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            if "hub_canon" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_canon (
+                        id VARCHAR PRIMARY KEY,
+                        series VARCHAR NOT NULL,
+                        entity VARCHAR NOT NULL,
+                        fact TEXT NOT NULL,
+                        source_note VARCHAR,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        UNIQUE(series, entity)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_hub_canon_series_entity "
+                    "ON hub_canon(series, entity)"
+                ))
+                logging.getLogger(__name__).info("Created hub_canon table")
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"hub canon migration: {e}")
 
 
 def _migrate_add_hub_tables():
@@ -1937,6 +1980,7 @@ def init_db():
     _migrate_add_crew_member_id()
     _migrate_add_assistant_columns()
     _migrate_add_hub_tables()
+    _migrate_add_hub_canon_table()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()

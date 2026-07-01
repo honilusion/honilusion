@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.database import SessionLocal, HubMessage, HubProject
+from core.database import SessionLocal, HubMessage, HubProject, HubCanon
 from src.auth_helpers import require_authenticated_request
 from src.constants import STATIC_DIR
 
@@ -48,6 +48,13 @@ class ProjectPatch(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     owner_agent: Optional[str] = None
+
+
+class CanonUpsert(BaseModel):
+    series: str
+    entity: str
+    fact: str
+    source_note: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +233,94 @@ def setup_hub_routes() -> APIRouter:
         finally:
             db.close()
 
+    # -----------------------------------------------------------------------
+    # Canon
+    # -----------------------------------------------------------------------
+
+    @router.get("/canon/{series}")
+    async def list_canon(series: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(HubCanon)
+                .filter(HubCanon.series == series)
+                .order_by(HubCanon.entity)
+                .all()
+            )
+            return [_canon_dict(r) for r in rows]
+        finally:
+            db.close()
+
+    @router.get("/canon/{series}/{entity}")
+    async def get_canon(series: str, entity: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(HubCanon)
+                .filter(HubCanon.series == series, HubCanon.entity == entity)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Canon fact not found")
+            return _canon_dict(row)
+        finally:
+            db.close()
+
+    @router.post("/canon")
+    async def upsert_canon(body: CanonUpsert, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            row = (
+                db.query(HubCanon)
+                .filter(HubCanon.series == body.series, HubCanon.entity == body.entity)
+                .first()
+            )
+            if row:
+                row.fact = body.fact
+                if body.source_note is not None:
+                    row.source_note = body.source_note
+                row.updated_at = now
+                db.commit()
+                db.refresh(row)
+                return _canon_dict(row)
+            row = HubCanon(
+                id=_short_id(),
+                series=body.series,
+                entity=body.entity,
+                fact=body.fact,
+                source_note=body.source_note,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _canon_dict(row)
+        finally:
+            db.close()
+
+    @router.delete("/canon/{series}/{entity}")
+    async def delete_canon(series: str, entity: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(HubCanon)
+                .filter(HubCanon.series == series, HubCanon.entity == entity)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Canon fact not found")
+            db.delete(row)
+            db.commit()
+            return {"deleted": True}
+        finally:
+            db.close()
+
     return router
 
 
@@ -254,4 +349,16 @@ def _proj_dict(p: HubProject) -> dict:
         "notes": p.notes,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+def _canon_dict(r: HubCanon) -> dict:
+    return {
+        "id": r.id,
+        "series": r.series,
+        "entity": r.entity,
+        "fact": r.fact,
+        "source_note": r.source_note,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }

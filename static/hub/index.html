@@ -148,6 +148,10 @@
     .compose-card { margin-top: 16px; }
     .compose-title { font-size: 13px; font-weight: 600; color: var(--text-dim); margin-bottom: 10px; }
 
+    /* Canon table */
+    #canon-body textarea { min-height: 50px; font-size: 12px; }
+    #canon-body input { font-size: 12px; }
+
     /* Error */
     .error-banner {
       background: #3a1e1e; border: 1px solid var(--red); color: var(--red);
@@ -287,6 +291,68 @@
           <textarea id="proj-notes" placeholder="Project notes..." style="min-height:50px"></textarea>
         </div>
         <button id="add-project-btn" class="btn btn-primary">Save Project</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== CANON ====== -->
+  <section>
+    <div class="section-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+      </svg>
+      Canon
+    </div>
+
+    <div class="agent-select-row" style="margin-bottom:14px">
+      <label for="canon-series-input" style="margin:0;white-space:nowrap">Series:</label>
+      <input id="canon-series-input" placeholder="e.g. characters" style="max-width:200px;flex:none">
+      <button id="load-canon-btn" class="btn btn-ghost">Load</button>
+    </div>
+
+    <div class="card">
+      <div id="canon-error" class="error-banner hidden" style="margin:12px 12px 0"></div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:140px">Entity</th>
+            <th>Fact</th>
+            <th style="width:140px">Source</th>
+            <th style="width:100px">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="canon-body">
+          <tr><td colspan="4" class="empty-state" style="text-align:center;padding:20px">Enter a series name and click Load.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Add canon fact -->
+    <div class="card compose-card">
+      <div class="card-body">
+        <div class="compose-title">Add / update canon fact</div>
+        <div id="canon-add-error" class="error-banner hidden"></div>
+        <div class="form-row three">
+          <div class="form-group">
+            <label>Series</label>
+            <input id="canon-add-series" placeholder="e.g. characters">
+          </div>
+          <div class="form-group">
+            <label>Entity</label>
+            <input id="canon-add-entity" placeholder="e.g. Odysseus">
+          </div>
+          <div class="form-group">
+            <label>Source note (optional)</label>
+            <input id="canon-add-src" placeholder="e.g. Book 5">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Fact</label>
+          <textarea id="canon-add-fact" placeholder="Canon fact text..."></textarea>
+        </div>
+        <button id="add-canon-btn" class="btn btn-primary">Save Canon Fact</button>
       </div>
     </div>
   </section>

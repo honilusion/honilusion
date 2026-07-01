@@ -207,6 +207,100 @@ async function addProject() {
   }
 }
 
+// ---- Canon ----
+
+let _canonSeries = '';
+
+async function loadCanon() {
+  const series = document.getElementById('canon-series-input').value.trim();
+  clearError('canon-error');
+  const tbody = document.getElementById('canon-body');
+  if (!series) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="text-align:center;padding:12px">Enter a series name and click Load.</td></tr>';
+    return;
+  }
+  _canonSeries = series;
+  try {
+    const rows = await apiFetch(`/canon/${encodeURIComponent(series)}`);
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="text-align:center;padding:12px">No facts in this series.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr id="canon-row-${esc(r.id)}">
+        <td><strong>${esc(r.entity)}</strong></td>
+        <td>
+          <textarea id="canon-fact-${esc(r.id)}" style="min-height:50px;width:100%">${esc(r.fact)}</textarea>
+        </td>
+        <td>
+          <input id="canon-src-${esc(r.id)}" value="${esc(r.source_note || '')}" placeholder="(none)">
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost" data-action="save-canon" data-series="${esc(r.series)}" data-entity="${esc(r.entity)}" data-id="${esc(r.id)}">Save</button>
+          <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" data-action="delete-canon" data-series="${esc(r.series)}" data-entity="${esc(r.entity)}" data-id="${esc(r.id)}">Del</button>
+        </td>
+      </tr>`).join('');
+  } catch (e) {
+    showError('canon-error', e.message);
+    tbody.innerHTML = '';
+  }
+}
+
+async function saveCanonRow(series, entity, id) {
+  clearError('canon-error');
+  const fact = document.getElementById('canon-fact-' + id).value.trim();
+  const src = document.getElementById('canon-src-' + id).value.trim();
+  if (!fact) { showError('canon-error', 'Fact cannot be empty'); return; }
+  try {
+    await apiFetch('/canon', {
+      method: 'POST',
+      body: JSON.stringify({ series, entity, fact, source_note: src || null }),
+    });
+    loadCanon();
+  } catch (e) {
+    showError('canon-error', 'Save failed: ' + e.message);
+  }
+}
+
+async function deleteCanonRow(series, entity) {
+  clearError('canon-error');
+  try {
+    await apiFetch(`/canon/${encodeURIComponent(series)}/${encodeURIComponent(entity)}`, { method: 'DELETE' });
+    loadCanon();
+  } catch (e) {
+    showError('canon-error', 'Delete failed: ' + e.message);
+  }
+}
+
+async function addCanon() {
+  clearError('canon-add-error');
+  const series = document.getElementById('canon-add-series').value.trim();
+  const entity = document.getElementById('canon-add-entity').value.trim();
+  const fact = document.getElementById('canon-add-fact').value.trim();
+  const src = document.getElementById('canon-add-src').value.trim();
+  if (!series || !entity || !fact) {
+    showError('canon-add-error', 'Series, entity, and fact are required');
+    return;
+  }
+  try {
+    await apiFetch('/canon', {
+      method: 'POST',
+      body: JSON.stringify({ series, entity, fact, source_note: src || null }),
+    });
+    document.getElementById('canon-add-entity').value = '';
+    document.getElementById('canon-add-fact').value = '';
+    document.getElementById('canon-add-src').value = '';
+    if (!document.getElementById('canon-series-input').value.trim()) {
+      document.getElementById('canon-series-input').value = series;
+    }
+    _canonSeries = series;
+    document.getElementById('canon-series-input').value = series;
+    loadCanon();
+  } catch (e) {
+    showError('canon-add-error', e.message);
+  }
+}
+
 // ---- Auto-refresh ----
 
 function tick() {
@@ -247,6 +341,17 @@ document.getElementById('inbox-list').addEventListener('click', function(e) {
 document.getElementById('projects-body').addEventListener('click', function(e) {
   const btn = e.target.closest('[data-action="save-project"]');
   if (btn) saveProjectRow(btn.dataset.name, btn.dataset.id);
+});
+
+document.getElementById('load-canon-btn').addEventListener('click', loadCanon);
+document.getElementById('add-canon-btn').addEventListener('click', addCanon);
+
+// Event delegation for canon table rows
+document.getElementById('canon-body').addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'save-canon') saveCanonRow(btn.dataset.series, btn.dataset.entity, btn.dataset.id);
+  if (btn.dataset.action === 'delete-canon') deleteCanonRow(btn.dataset.series, btn.dataset.entity);
 });
 
 // Init — restore saved token, auto-load inbox if token present
