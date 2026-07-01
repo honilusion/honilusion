@@ -302,11 +302,20 @@ Added in commit "feat: Agent Hub Phase 1 — inbox and projects"
 - `read_at` — DateTime nullable
 - `related_project_id` — String nullable FK → hub_projects.id
 
-Migration: `_migrate_add_hub_tables()` registered in `init_db()` — uses PRAGMA/CREATE TABLE IF NOT EXISTS pattern.
+**hub_canon** (added Phase 2)
+- `id` — String PK (8-char UUID slice)
+- `series` — String NOT NULL (grouping key, e.g. "characters")
+- `entity` — String NOT NULL (unique key within series)
+- `fact` — Text NOT NULL
+- `source_note` — String nullable
+- `created_at`, `updated_at` — via TimestampMixin
+- Unique constraint on `(series, entity)`
+
+Migration: `_migrate_add_hub_tables()` + `_migrate_add_hub_canon_table()` registered in `init_db()` — uses PRAGMA/CREATE TABLE IF NOT EXISTS pattern.
 
 ### Routes (routes/hub/hub_routes.py)
 Route prefix: `/api/hub/`
-All endpoints require `require_user()` from `src/auth_helpers.py`.
+All endpoints require `require_authenticated_request()` from `src/auth_helpers.py`.
 
 **Inbox:**
 - `POST /api/hub/inbox` — send message `{from_agent, to_agent, content, related_project_id?}`
@@ -319,6 +328,12 @@ All endpoints require `require_user()` from `src/auth_helpers.py`.
 - `POST /api/hub/projects` — create or update project (upsert by name)
 - `GET /api/hub/projects/{name}` — get project by name
 - `PATCH /api/hub/projects/{name}` — update status/notes/owner_agent
+
+**Canon (added Phase 2):**
+- `GET /api/hub/canon/{series}` — list all facts for a series (ordered by entity)
+- `GET /api/hub/canon/{series}/{entity}` — get single fact
+- `POST /api/hub/canon` — upsert `{series, entity, fact, source_note?}`
+- `DELETE /api/hub/canon/{series}/{entity}` — delete fact
 
 Registered in app.py: `from routes.hub import setup_hub_routes` / `app.include_router(setup_hub_routes())`
 
@@ -333,6 +348,9 @@ Tools:
 - `project_update(name, status, owner_agent?, notes?)` — create/update project
 - `project_list()` — list all projects
 - `project_get(name)` — get project by name
+- `canon_get(series, entity)` — get a canon fact
+- `canon_set(series, entity, fact, source_note?)` — create/update a canon fact
+- `canon_list(series)` — list all facts for a series
 
 ### MCP HTTP endpoint (routes/hub/hub_mcp.py)
 FastMCP HTTP server exposing Hub tools for external MCP clients (e.g. claude.ai custom connectors).
@@ -368,7 +386,7 @@ curl -s --max-time 10 -X POST http://localhost:7000/api/hub/mcp/ \
 ### Static GUI
 Single-page dashboard at `/hub/` (served via `GET /hub/` route in app.py as FileResponse).
 Source: `static/hub/index.html` — vanilla JS, dark theme matching Odysseus style.
-Features: inbox viewer with unread highlighting, compose form, projects table with inline editing, 30-second auto-refresh.
+Features: inbox viewer with unread highlighting, compose form, projects table with inline editing, canon section with series load/inline edit/delete/add form, 30-second auto-refresh.
 
 Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (between Gallery and Library), opens `/hub/` in a new tab.
 
@@ -383,6 +401,16 @@ Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (betwe
   - See commit: feat: auto fileprep processing for chat file uploads + PyMuPDF in Dockerfile
 - [x] Hub FastMCP HTTP endpoint for claude.ai connector (Feature 4)
   - See commit: feat: Hub FastMCP HTTP endpoint for claude.ai connector
+- [x] Agent Hub Phase 2 — canon store
+  - See commit: feat: Agent Hub Phase 2 — canon store
+
+### feat: Agent Hub Phase 2 — canon store (commit e0b0a2c)
+Files changed:
+- `core/database.py` — added `HubCanon` model (series/entity/fact/source_note, unique on series+entity); added `_migrate_add_hub_canon_table()` registered in `init_db()`
+- `routes/hub/hub_routes.py` — added `CanonUpsert` model, 4 REST endpoints under `/api/hub/canon/`, `_canon_dict()` serializer; also corrected auth to `require_authenticated_request()` (not `require_user()`)
+- `mcp_servers/hub_server.py` — added `canon_get`, `canon_set`, `canon_list` tools to list_tools() and call_tool()
+- `static/hub/hub.js` — added `loadCanon()`, `saveCanonRow()`, `deleteCanonRow()`, `addCanon()` functions; event listeners on `#load-canon-btn`, `#add-canon-btn`, and delegated listeners on `#canon-body` using data-action pattern (no onclick attrs — CSP compliant)
+- `static/hub/index.html` — added Canon section with series input + Load button, table (`#canon-body`) with entity/fact/source/actions columns, add-fact form (`#canon-add-*` fields, `#add-canon-btn`)
 
 ### feat: auto fileprep processing for chat file uploads (commit 7dbb4e7)
 Files changed:
