@@ -1744,6 +1744,39 @@ class Integration(TimestampMixin, Base):
     enabled = Column(Boolean, default=True)
 
 
+class HubProject(TimestampMixin, Base):
+    """Agent Hub shared project status board entry."""
+    __tablename__ = "hub_projects"
+
+    id          = Column(String, primary_key=True, index=True)
+    name        = Column(String, nullable=False, unique=True)
+    status      = Column(String, nullable=False, default="open")  # open/in_progress/blocked/done
+    owner_agent = Column(String, nullable=True)
+    notes       = Column(Text, nullable=True)
+
+    messages = relationship("HubMessage", back_populates="project",
+                            foreign_keys="HubMessage.related_project_id")
+
+
+class HubMessage(TimestampMixin, Base):
+    """Agent Hub inbox message (agent-to-agent)."""
+    __tablename__ = "hub_messages"
+
+    id                 = Column(String, primary_key=True, index=True)
+    from_agent         = Column(String, nullable=False)
+    to_agent           = Column(String, nullable=False)
+    content            = Column(Text, nullable=False)
+    read_at            = Column(DateTime, nullable=True)
+    related_project_id = Column(String, ForeignKey("hub_projects.id"), nullable=True, index=True)
+
+    project = relationship("HubProject", back_populates="messages",
+                           foreign_keys=[related_project_id])
+
+    __table_args__ = (
+        Index("ix_hub_messages_to_agent", "to_agent", "read_at"),
+    )
+
+
 
 
 
@@ -1815,6 +1848,49 @@ def _migrate_seed_email_account():
         logging.getLogger(__name__).warning(f"seed email account migration: {e}")
 
 
+def _migrate_add_hub_tables():
+    """Create hub_messages and hub_projects tables if they don't exist."""
+    try:
+        with engine.connect() as conn:
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            if "hub_projects" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_projects (
+                        id VARCHAR PRIMARY KEY,
+                        name VARCHAR NOT NULL UNIQUE,
+                        status VARCHAR NOT NULL DEFAULT 'open',
+                        owner_agent VARCHAR,
+                        notes TEXT,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                """))
+                logging.getLogger(__name__).info("Created hub_projects table")
+            if "hub_messages" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_messages (
+                        id VARCHAR PRIMARY KEY,
+                        from_agent VARCHAR NOT NULL,
+                        to_agent VARCHAR NOT NULL,
+                        content TEXT NOT NULL,
+                        read_at DATETIME,
+                        related_project_id VARCHAR REFERENCES hub_projects(id),
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_hub_messages_to_agent "
+                    "ON hub_messages(to_agent, read_at)"
+                ))
+                logging.getLogger(__name__).info("Created hub_messages table")
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"hub tables migration: {e}")
+
+
 # WARNING: Foreign-key enforcement is enabled globally for all SQLite connections.
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
@@ -1860,6 +1936,7 @@ def init_db():
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()
     _migrate_add_assistant_columns()
+    _migrate_add_hub_tables()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()

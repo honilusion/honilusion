@@ -279,6 +279,70 @@ FastMCP DNS rebinding protection must be disabled:
 
 ---
 
+## Agent Hub (Phase 1)
+
+Added in commit "feat: Agent Hub Phase 1 — inbox and projects"
+
+### Database tables (core/database.py)
+
+**hub_projects**
+- `id` — String PK (8-char UUID slice)
+- `name` — String NOT NULL UNIQUE
+- `status` — String NOT NULL DEFAULT 'open' (open/in_progress/blocked/done)
+- `owner_agent` — String nullable
+- `notes` — Text nullable
+- `created_at`, `updated_at` — via TimestampMixin
+
+**hub_messages**
+- `id` — String PK (8-char UUID slice)
+- `from_agent` — String NOT NULL
+- `to_agent` — String NOT NULL
+- `content` — Text NOT NULL
+- `created_at`, `updated_at` — via TimestampMixin
+- `read_at` — DateTime nullable
+- `related_project_id` — String nullable FK → hub_projects.id
+
+Migration: `_migrate_add_hub_tables()` registered in `init_db()` — uses PRAGMA/CREATE TABLE IF NOT EXISTS pattern.
+
+### Routes (routes/hub/hub_routes.py)
+Route prefix: `/api/hub/`
+All endpoints require `require_user()` from `src/auth_helpers.py`.
+
+**Inbox:**
+- `POST /api/hub/inbox` — send message `{from_agent, to_agent, content, related_project_id?}`
+- `GET /api/hub/inbox/{agent_id}` — get messages for agent (unread first, limit 50)
+- `PATCH /api/hub/inbox/{message_id}/read` — mark as read
+- `GET /api/hub/inbox/{agent_id}/unread-count` — returns `{count: N}`
+
+**Projects:**
+- `GET /api/hub/projects` — list all projects
+- `POST /api/hub/projects` — create or update project (upsert by name)
+- `GET /api/hub/projects/{name}` — get project by name
+- `PATCH /api/hub/projects/{name}` — update status/notes/owner_agent
+
+Registered in app.py: `from routes.hub import setup_hub_routes` / `app.include_router(setup_hub_routes())`
+
+### MCP server (mcp_servers/hub_server.py)
+Built-in stdio MCP server registered as `"hub"` in `src/builtin_mcp.py`.
+Directly accesses SQLite DB (same pattern as memory_server.py).
+
+Tools:
+- `inbox_send(from_agent, to_agent, content, related_project_id?)` — send message
+- `inbox_check(agent_id, unread_only=True)` — list messages
+- `inbox_mark_read(message_id)` — mark as read
+- `project_update(name, status, owner_agent?, notes?)` — create/update project
+- `project_list()` — list all projects
+- `project_get(name)` — get project by name
+
+### Static GUI
+Single-page dashboard at `/hub/` (served via `GET /hub/` route in app.py as FileResponse).
+Source: `static/hub/index.html` — vanilla JS, dark theme matching Odysseus style.
+Features: inbox viewer with unread highlighting, compose form, projects table with inline editing, 30-second auto-refresh.
+
+Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (between Gallery and Library), opens `/hub/` in a new tab.
+
+---
+
 ## Planned Features (honilusion-main)
 
 - [x] Persistent API tokens (self-service, Settings → Account)
@@ -298,6 +362,40 @@ Files changed:
 **fileprep endpoint:** `POST http://172.21.0.1:7111/process` — field name `file`, returns plain Markdown. Supports: pdf, docx, xlsx, csv, md, txt, png, jpg, jpeg, tiff, bmp.
 
 **Intercept point:** `src/chat_handler.py:preprocess_message()` — between the `resolve_upload()` loop and the `attachment_meta.append()` loop. The updated `files_by_id` dict flows through to the vision check and `build_user_content`, so prepped files skip image/vision paths and land in `_process_text_file()` (text/markdown mime + .md extension both satisfied).
+
+### Debugging auto fileprep delivery (session 2026-06-29)
+
+**Symptom:** fileprep produces .md files in `.fileprep/` cache and `files_by_id` is updated, but the model does not receive the fileprepped content.
+
+**Suspected failure points (to be confirmed by debug run):**
+1. `upload_handler.is_document_file(display_name, mime)` in `build_user_content` (document_processor.py line ~471) may return False for `text/markdown` / `.md` files. If so, the else branch fires and delivers `[Attached non-text file]` to the model instead of calling `_process_text_file()`.
+2. `upload_handler._inside_upload_dir(cache_path)` may reject the `.fileprep/` subpath if the handler does an exact prefix check that doesn't tolerate hidden subdirectories.
+3. `_fileprep_file()` failure is logged at `debug` level (line 69 in chat_handler.py) — silent in production docker logs, so failures look like a no-op.
+
+**Diagnostic logging added (NOT committed — diagnostic only):**
+- `chat_handler.py`: `[DBG-FP]` lines log att_id, fi keys, path, ext, supported-ext check, fileprep call success/failure, cache_path, and the final `files_by_id` update.
+- `document_processor.py`: `[DBG-BUC]` lines log upload_info dict, path/path_exists, `_inside_upload_dir` result, and `is_image/is_audio/is_document` flags for each attachment in `build_user_content`.
+
+**Deployment:** `docker cp` both files + `docker exec <name> kill -TERM 1` + `docker start <name>` (no sudo needed). Container: `16cb127928d1_odysseus-odysseus-1` (check `docker ps` — name changes after full rm+up).
+
+**To capture debug output:**
+```bash
+# In one terminal — stream logs filtered to debug lines:
+docker logs -f 16cb127928d1_odysseus-odysseus-1 2>&1 | grep -E "\[DBG-(FP|BUC)\]"
+
+# In another terminal — upload a PDF and send it in a chat:
+SESSION_COOKIE="odysseus_session=<your-session-cookie>"
+# Upload a test PDF:
+curl -s -b "$SESSION_COOKIE" -F "file=@/tmp/test.pdf" http://localhost:7000/api/upload | jq .
+# Then POST a chat message with the returned att_id:
+curl -s -b "$SESSION_COOKIE" -X POST http://localhost:7000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"summarize this","session_id":"<sid>","attachment_ids":["<att_id>"]}'
+```
+
+**Fix path (once root cause confirmed):**
+- If `is_document_file` returns False for `.md`: fix the upload_handler method (or add `.md` / `text/markdown` to its document mime/ext sets), OR change the fileprep intercept to call `_process_text_file()` directly and skip `build_user_content`'s branch check.
+- If `_inside_upload_dir` rejects `.fileprep/`: write cache to a non-hidden subdir (e.g. `fileprep_cache/`) or patch the path check.
 
 ---
 

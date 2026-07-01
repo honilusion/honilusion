@@ -799,6 +799,20 @@ app.include_router(setup_contacts_routes())
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
 
+from routes.hub import setup_hub_routes
+app.include_router(setup_hub_routes())
+
+@app.get("/hub", include_in_schema=False)
+@app.get("/hub/", include_in_schema=False)
+async def hub_redirect(request: Request):
+    from fastapi.responses import FileResponse as _FR
+    from pathlib import Path as _P
+    _html = _P(STATIC_DIR) / "hub" / "index.html"
+    if not _html.exists():
+        from fastapi import HTTPException as _E
+        raise _E(status_code=404, detail="Hub not found")
+    return _FR(str(_html), media_type="text/html")
+
 # ========= ROUTES (kept in app.py) =========
 
 @app.get("/")
