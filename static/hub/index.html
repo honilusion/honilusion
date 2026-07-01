@@ -39,7 +39,23 @@
     }
     header h1 { font-size: 18px; font-weight: 600; }
     header .subtitle { color: var(--text-dim); font-size: 12px; margin-top: 1px; }
-    #refresh-status { margin-left: auto; color: var(--text-dim); font-size: 12px; }
+    #refresh-status { color: var(--text-dim); font-size: 12px; }
+    .token-area {
+      margin-left: auto; display: flex; align-items: center; gap: 6px;
+    }
+    #token-input {
+      width: 220px; padding: 5px 8px; font-size: 12px;
+      background: var(--surface2); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      font-family: monospace;
+    }
+    #token-input:focus { outline: none; border-color: var(--accent); }
+    #token-save-btn {
+      padding: 5px 10px; font-size: 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); background: transparent; color: var(--text-dim);
+      cursor: pointer; font-family: var(--font);
+    }
+    #token-save-btn:hover { color: var(--text); border-color: var(--text-dim); }
     .hub-icon { color: var(--accent); }
 
     main { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid; gap: 32px; }
@@ -152,7 +168,11 @@
     <h1>Agent Hub</h1>
     <div class="subtitle">Coordination layer — inbox &amp; projects</div>
   </div>
-  <div id="refresh-status">auto-refresh in <span id="countdown">30</span>s</div>
+  <div class="token-area">
+    <input id="token-input" type="password" placeholder="ody_... Bearer token" autocomplete="off">
+    <button id="token-save-btn" onclick="saveToken()">Save token</button>
+    <div id="refresh-status">auto-refresh in <span id="countdown">30</span>s</div>
+  </div>
 </header>
 
 <main>
@@ -282,18 +302,35 @@ function esc(s) {
   return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+function getBearerToken() {
+  return localStorage.getItem('hub_bearer_token') || '';
+}
+
 async function apiFetch(path, opts = {}) {
+  const token = getBearerToken();
+  const authHeader = token ? { 'Authorization': 'Bearer ' + token } : {};
   const r = await fetch(API + path, {
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeader, ...(opts.headers || {}) },
     ...opts,
   });
   if (!r.ok) {
-    if (r.status === 401) throw new Error('Session expired — please log in again');
+    if (r.status === 401) throw new Error('Auth failed — check Bearer token or log in');
     const txt = await r.text().catch(() => r.statusText);
     throw new Error(`HTTP ${r.status}: ${txt}`);
   }
   return r.json();
+}
+
+function saveToken() {
+  const val = document.getElementById('token-input').value.trim();
+  if (val) {
+    localStorage.setItem('hub_bearer_token', val);
+  } else {
+    localStorage.removeItem('hub_bearer_token');
+  }
+  refresh();
+  loadProjects();
 }
 
 function showError(id, msg) {
@@ -492,9 +529,17 @@ function startCountdown() {
   _countdownTimer = setInterval(tick, 1000);
 }
 
-// Init
-loadProjects();
-startCountdown();
+// Init — restore saved token, auto-load inbox if token present
+(function init() {
+  const saved = localStorage.getItem('hub_bearer_token');
+  if (saved) {
+    document.getElementById('token-input').value = saved;
+    document.getElementById('inbox-agent-input').value = 'claude-code-server';
+    loadInbox();
+  }
+  loadProjects();
+  startCountdown();
+})();
 </script>
 </body>
 </html>
