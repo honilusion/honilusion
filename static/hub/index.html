@@ -284,12 +284,14 @@ function esc(s) {
 
 async function apiFetch(path, opts = {}) {
   const r = await fetch(API + path, {
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
   if (!r.ok) {
+    if (r.status === 401) throw new Error('Session expired — please log in again');
     const txt = await r.text().catch(() => r.statusText);
-    throw new Error(`${r.status}: ${txt}`);
+    throw new Error(`HTTP ${r.status}: ${txt}`);
   }
   return r.json();
 }
