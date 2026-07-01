@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.database import SessionLocal, HubMessage, HubProject
-from src.auth_helpers import require_user
+from src.auth_helpers import require_authenticated_request
 from src.constants import STATIC_DIR
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def setup_hub_routes() -> APIRouter:
     @router.get("/ui", include_in_schema=False)
     @router.get("/ui/", include_in_schema=False)
     async def hub_ui(request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         html_path = Path(STATIC_DIR) / "hub" / "index.html"
         if not html_path.exists():
             raise HTTPException(status_code=404, detail="Hub UI not found")
@@ -76,7 +76,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.post("/inbox")
     async def send_message(body: MessageSend, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             now = _utcnow()
@@ -98,7 +98,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.get("/inbox/{agent_id}")
     async def get_inbox(agent_id: str, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             msgs = (
@@ -114,7 +114,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.patch("/inbox/{message_id}/read")
     async def mark_read(message_id: str, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             msg = db.query(HubMessage).filter(HubMessage.id == message_id).first()
@@ -131,7 +131,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.get("/inbox/{agent_id}/unread-count")
     async def unread_count(agent_id: str, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             count = (
@@ -149,7 +149,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.get("/projects")
     async def list_projects(request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             projects = (
@@ -163,7 +163,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.post("/projects")
     async def create_project(body: ProjectUpsert, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             existing = db.query(HubProject).filter(HubProject.name == body.name).first()
@@ -195,7 +195,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.get("/projects/{name}")
     async def get_project(name: str, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             proj = db.query(HubProject).filter(HubProject.name == name).first()
@@ -207,7 +207,7 @@ def setup_hub_routes() -> APIRouter:
 
     @router.patch("/projects/{name}")
     async def update_project(name: str, body: ProjectPatch, request: Request):
-        require_user(request)
+        require_authenticated_request(request)
         db = SessionLocal()
         try:
             proj = db.query(HubProject).filter(HubProject.name == name).first()
