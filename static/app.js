@@ -916,6 +916,14 @@ function initializeEventListeners() {
       }
     });
   }
+
+  // Agent Hub tool button
+  const toolHubBtn = el('tool-hub-btn');
+  if (toolHubBtn) {
+    toolHubBtn.addEventListener('click', () => {
+      window.open('/hub/', '_blank');
+    });
+  }
   // Refresh notes due-reminder badge on load and every 5 minutes
   if (notesModule && notesModule.refreshDueBadge) {
     notesModule.refreshDueBadge();
