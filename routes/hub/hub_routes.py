@@ -113,6 +113,24 @@ def setup_hub_routes() -> APIRouter:
         finally:
             db.close()
 
+    @router.get("/inbox/agents")
+    async def list_inbox_agents(request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            from sqlalchemy import union
+            from sqlalchemy import select as sa_select
+            froms = db.execute(
+                sa_select(HubMessage.from_agent.label("agent")).distinct()
+            ).scalars().all()
+            tos = db.execute(
+                sa_select(HubMessage.to_agent.label("agent")).distinct()
+            ).scalars().all()
+            agents = sorted(set(froms) | set(tos))
+            return agents
+        finally:
+            db.close()
+
     @router.get("/inbox/{agent_id}")
     async def get_inbox(agent_id: str, request: Request):
         require_authenticated_request(request)
@@ -143,6 +161,20 @@ def setup_hub_routes() -> APIRouter:
                 db.commit()
                 db.refresh(msg)
             return _msg_dict(msg)
+        finally:
+            db.close()
+
+    @router.delete("/inbox/{message_id}")
+    async def delete_message(message_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            msg = db.query(HubMessage).filter(HubMessage.id == message_id).first()
+            if not msg:
+                raise HTTPException(status_code=404, detail="Message not found")
+            db.delete(msg)
+            db.commit()
+            return {"deleted": True, "id": message_id}
         finally:
             db.close()
 
@@ -247,6 +279,19 @@ def setup_hub_routes() -> APIRouter:
     # Canon
     # -----------------------------------------------------------------------
 
+    @router.get("/canon/series")
+    async def list_canon_series(request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            from sqlalchemy import select as sa_select
+            names = db.execute(
+                sa_select(HubCanon.series).distinct().order_by(HubCanon.series)
+            ).scalars().all()
+            return sorted(names)
+        finally:
+            db.close()
+
     @router.get("/canon/{series}")
     async def list_canon(series: str, request: Request):
         require_authenticated_request(request)
@@ -254,8 +299,8 @@ def setup_hub_routes() -> APIRouter:
         try:
             rows = (
                 db.query(HubCanon)
-                .filter(HubCanon.series == series)
-                .order_by(HubCanon.entity)
+                .filter(HubCanon.series.ilike(f"%{series}%"))
+                .order_by(HubCanon.series, HubCanon.entity)
                 .all()
             )
             return [_canon_dict(r) for r in rows]

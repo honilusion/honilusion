@@ -49,12 +49,31 @@ function clearError(id) {
 
 // ---- Inbox ----
 
+async function loadAgents() {
+  try {
+    const agents = await apiFetch('/inbox/agents');
+    const sel = document.getElementById('inbox-agent-input');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Select agent...</option>' +
+      agents.map(a => `<option value="${esc(a)}"${a === current ? ' selected' : ''}>${esc(a)}</option>`).join('');
+    if (!current && agents.includes('claude-code-server')) {
+      sel.value = 'claude-code-server';
+      loadInbox();
+    } else if (!current && agents.length > 0) {
+      sel.value = agents[0];
+      loadInbox();
+    }
+  } catch (e) {
+    // silently ignore — agents endpoint may be empty
+  }
+}
+
 async function loadInbox() {
-  const agent = document.getElementById('inbox-agent-input').value.trim();
+  const agent = document.getElementById('inbox-agent-input').value;
   clearError('inbox-error');
   const listEl = document.getElementById('inbox-list');
   if (!agent) {
-    listEl.innerHTML = '<div class="empty-state">Enter an agent name.</div>';
+    listEl.innerHTML = '<div class="empty-state">Select an agent above.</div>';
     return;
   }
   try {
@@ -75,9 +94,7 @@ async function loadInbox() {
       const isUnread = !m.read_at;
       const ts = m.created_at ? new Date(m.created_at + 'Z').toLocaleString() : '';
       const proj = m.related_project_id ? `<div class="msg-project">Project: ${esc(m.related_project_id)}</div>` : '';
-      const readBtn = isUnread
-        ? `<button class="btn btn-ghost" data-action="mark-read" data-id="${esc(m.id)}">Mark read</button>`
-        : `<span style="color:var(--text-dim);font-size:11px">read</span>`;
+      const dismissBtn = `<button class="btn btn-ghost" data-action="dismiss-msg" data-id="${esc(m.id)}">Done / Dismiss</button>`;
       return `
         <div class="msg-item${isUnread ? ' unread' : ''}" id="msg-${esc(m.id)}">
           <div>
@@ -85,7 +102,7 @@ async function loadInbox() {
             <div class="msg-content">${esc(m.content)}</div>
             ${proj}
           </div>
-          <div>${readBtn}</div>
+          <div>${dismissBtn}</div>
         </div>`;
     }).join('');
   } catch (e) {
@@ -94,12 +111,13 @@ async function loadInbox() {
   }
 }
 
-async function markRead(msgId) {
+async function dismissMessage(msgId) {
   try {
-    await apiFetch(`/inbox/${encodeURIComponent(msgId)}/read`, { method: 'PATCH' });
+    await apiFetch(`/inbox/${encodeURIComponent(msgId)}`, { method: 'DELETE' });
     loadInbox();
+    loadAgents();
   } catch (e) {
-    showError('inbox-error', 'Failed to mark read: ' + e.message);
+    showError('inbox-error', 'Failed to dismiss: ' + e.message);
   }
 }
 
@@ -318,12 +336,47 @@ async function addProject() {
 
 let _canonSeries = '';
 
+async function loadSeriesList() {
+  try {
+    const series = await apiFetch('/canon/series');
+    const sel = document.getElementById('canon-series-input');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Select series...</option>' +
+      series.map(s => `<option value="${esc(s)}"${s === current ? ' selected' : ''}>${esc(s)}</option>`).join('') +
+      '<option value="__new__">— Add new series —</option>';
+    if (!current && series.includes('The Chaos Quotient')) {
+      sel.value = 'The Chaos Quotient';
+      loadCanon();
+    } else if (!current && series.length > 0) {
+      sel.value = series[0];
+      loadCanon();
+    }
+  } catch (e) {
+    // silently ignore
+  }
+}
+
 async function loadCanon() {
-  const series = document.getElementById('canon-series-input').value.trim();
+  const sel = document.getElementById('canon-series-input');
+  const selValue = sel.value;
+  const newRow = document.getElementById('canon-new-series-row');
+
+  if (selValue === '__new__') {
+    newRow.classList.remove('hidden');
+    return;
+  }
+  newRow.classList.add('hidden');
+
+  const series = selValue === ''
+    ? ''
+    : (selValue === '__new__'
+        ? document.getElementById('canon-new-series-input').value.trim()
+        : selValue);
+
   clearError('canon-error');
   const tbody = document.getElementById('canon-body');
   if (!series) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="text-align:center;padding:12px">Enter a series name and click Load.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="text-align:center;padding:12px">Select a series above.</td></tr>';
     return;
   }
   _canonSeries = series;
@@ -335,7 +388,7 @@ async function loadCanon() {
     }
     tbody.innerHTML = rows.map(r => `
       <tr id="canon-row-${esc(r.id)}">
-        <td><strong>${esc(r.entity)}</strong></td>
+        <td><strong>${esc(r.entity)}</strong><br><small style="color:var(--text-dim)">${esc(r.series)}</small></td>
         <td>
           <textarea id="canon-fact-${esc(r.id)}" style="min-height:50px;width:100%">${esc(r.fact)}</textarea>
         </td>
@@ -381,27 +434,26 @@ async function deleteCanonRow(series, entity) {
 
 async function addCanon() {
   clearError('canon-add-error');
-  const series = document.getElementById('canon-add-series').value.trim();
+  const addSeries = document.getElementById('canon-add-series').value.trim();
   const entity = document.getElementById('canon-add-entity').value.trim();
   const fact = document.getElementById('canon-add-fact').value.trim();
   const src = document.getElementById('canon-add-src').value.trim();
-  if (!series || !entity || !fact) {
+  if (!addSeries || !entity || !fact) {
     showError('canon-add-error', 'Series, entity, and fact are required');
     return;
   }
   try {
     await apiFetch('/canon', {
       method: 'POST',
-      body: JSON.stringify({ series, entity, fact, source_note: src || null }),
+      body: JSON.stringify({ series: addSeries, entity, fact, source_note: src || null }),
     });
     document.getElementById('canon-add-entity').value = '';
     document.getElementById('canon-add-fact').value = '';
     document.getElementById('canon-add-src').value = '';
-    if (!document.getElementById('canon-series-input').value.trim()) {
-      document.getElementById('canon-series-input').value = series;
-    }
-    _canonSeries = series;
-    document.getElementById('canon-series-input').value = series;
+    _canonSeries = addSeries;
+    await loadSeriesList();
+    const sel = document.getElementById('canon-series-input');
+    sel.value = addSeries;
     loadCanon();
   } catch (e) {
     showError('canon-add-error', e.message);
@@ -421,7 +473,8 @@ function tick() {
 
 function refresh() {
   loadProjects();
-  const agent = document.getElementById('inbox-agent-input').value.trim();
+  loadAgents();
+  const agent = document.getElementById('inbox-agent-input').value;
   if (agent) loadInbox();
 }
 
@@ -435,13 +488,14 @@ function startCountdown() {
 
 document.getElementById('token-save-btn').addEventListener('click', saveToken);
 document.getElementById('load-inbox-btn').addEventListener('click', loadInbox);
+document.getElementById('inbox-agent-input').addEventListener('change', loadInbox);
 document.getElementById('send-msg-btn').addEventListener('click', sendMessage);
 document.getElementById('add-project-btn').addEventListener('click', addProject);
 
 // Event delegation for dynamically rendered inbox buttons
 document.getElementById('inbox-list').addEventListener('click', function(e) {
-  const btn = e.target.closest('[data-action="mark-read"]');
-  if (btn) markRead(btn.dataset.id);
+  const btn = e.target.closest('[data-action="dismiss-msg"]');
+  if (btn) dismissMessage(btn.dataset.id);
 });
 
 // Event delegation for project row buttons (save + context)
@@ -463,6 +517,7 @@ document.getElementById('project-context-panel').addEventListener('click', funct
 });
 
 document.getElementById('load-canon-btn').addEventListener('click', loadCanon);
+document.getElementById('canon-series-input').addEventListener('change', loadCanon);
 document.getElementById('add-canon-btn').addEventListener('click', addCanon);
 
 // Event delegation for canon table rows
@@ -473,14 +528,14 @@ document.getElementById('canon-body').addEventListener('click', function(e) {
   if (btn.dataset.action === 'delete-canon') deleteCanonRow(btn.dataset.series, btn.dataset.entity);
 });
 
-// Init — restore saved token, auto-load inbox if token present
+// Init — restore saved token, populate dropdowns
 (function init() {
   const saved = localStorage.getItem('hub_bearer_token');
   if (saved) {
     document.getElementById('token-input').value = saved;
-    document.getElementById('inbox-agent-input').value = 'claude-code-server';
-    loadInbox();
   }
   loadProjects();
+  loadAgents();
+  loadSeriesList();
   startCountdown();
 })();

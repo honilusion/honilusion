@@ -120,6 +120,24 @@ def inbox_mark_read(message_id: str) -> str:
 
 
 @_hub_mcp.tool()
+def inbox_delete(message_id: str) -> str:
+    """Delete an inbox message by ID."""
+    if not message_id:
+        return "Error: message_id is required"
+    from core.database import SessionLocal, HubMessage
+    db = SessionLocal()
+    try:
+        msg = db.query(HubMessage).filter(HubMessage.id == message_id).first()
+        if not msg:
+            return f"Error: Message {message_id!r} not found"
+        db.delete(msg)
+        db.commit()
+        return f"Message {message_id} deleted"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
 def project_update(
     name: str,
     status: str = "open",

@@ -213,8 +213,10 @@
 
     <div class="agent-select-row">
       <label for="inbox-agent-input" style="margin:0;white-space:nowrap">View messages for:</label>
-      <input id="inbox-agent-input" placeholder="agent name" value="">
-      <button id="load-inbox-btn" class="btn btn-ghost">Load</button>
+      <select id="inbox-agent-input" style="max-width:220px;flex:none">
+        <option value="">Select agent...</option>
+      </select>
+      <button id="load-inbox-btn" class="btn btn-ghost">Refresh</button>
     </div>
 
     <div id="inbox-error" class="error-banner hidden"></div>
@@ -341,8 +343,14 @@
 
     <div class="agent-select-row" style="margin-bottom:14px">
       <label for="canon-series-input" style="margin:0;white-space:nowrap">Series:</label>
-      <input id="canon-series-input" placeholder="e.g. characters" style="max-width:200px;flex:none">
+      <select id="canon-series-input" style="max-width:260px;flex:none">
+        <option value="">Select series...</option>
+      </select>
       <button id="load-canon-btn" class="btn btn-ghost">Load</button>
+    </div>
+    <div id="canon-new-series-row" class="agent-select-row hidden" style="margin-bottom:14px">
+      <label style="margin:0;white-space:nowrap">New series name:</label>
+      <input id="canon-new-series-input" placeholder="e.g. characters" style="max-width:200px;flex:none">
     </div>
 
     <div class="card">

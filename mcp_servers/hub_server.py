@@ -83,6 +83,17 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="inbox_delete",
+            description="Delete an inbox message by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string", "description": "Message ID to delete"},
+                },
+                "required": ["message_id"],
+            },
+        ),
+        Tool(
             name="project_update",
             description="Create or update an Agent Hub project.",
             inputSchema={
@@ -274,6 +285,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 msg.updated_at = _utcnow()
                 db.commit()
             return _text(f"Message {message_id} marked as read")
+        finally:
+            db.close()
+
+    elif name == "inbox_delete":
+        message_id = arguments.get("message_id", "").strip()
+        if not message_id:
+            return _text("Error: message_id is required")
+        db = SessionLocal()
+        try:
+            msg = db.query(HubMessage).filter(HubMessage.id == message_id).first()
+            if not msg:
+                return _text(f"Error: Message {message_id!r} not found")
+            db.delete(msg)
+            db.commit()
+            return _text(f"Message {message_id} deleted")
         finally:
             db.close()
 
