@@ -403,6 +403,21 @@ Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (betwe
   - See commit: feat: Hub FastMCP HTTP endpoint for claude.ai connector
 - [x] Agent Hub Phase 2 — canon store
   - See commit: feat: Agent Hub Phase 2 — canon store
+- [x] Agent Hub Phase 3 — project context store
+  - See commit: feat: Agent Hub Phase 3 — project context store (sections + changelog)
+
+### feat: Agent Hub Phase 3 — project context store (commit be626f7)
+Files changed:
+- `core/database.py` — added `HubProjectSection` model (Integer PK, project_name/section/content/updated_at/updated_by, UNIQUE on project_name+section) and `HubProjectChangelog` model (Integer PK, append-only); added `_migrate_add_hub_project_context_tables()` registered in `init_db()` — migrates existing project `notes` → `completed` section on first run
+- `routes/hub/hub_routes.py` — added `SectionUpdate` and `ChangelogAppend` Pydantic models; 5 new REST endpoints under `/api/hub/projects/{name}/sections` and `/projects/{name}/changelog`; `recent_changes` section is virtual (generated from changelog); PUT rejects writes to `recent_changes`; changelog auto-prunes at 50 entries
+- `mcp_servers/hub_server.py` — added `project_get_section`, `project_update_section`, `project_log`, `project_changelog` tools; updated `project_get` to return section names + last-updated timestamps (not content); MCP caller is identified as `"claude-code-server"` in `updated_by`/`created_by`
+- `routes/hub/hub_mcp.py` — same 4 tools + `project_get` update for the FastMCP HTTP connector; caller identified as `"claude-web"`
+- `static/hub/hub.js` — `VALID_SECTIONS` constant; `openProjectContext`, `closeProjectContext`, `renderContextTabs`, `selectContextTab`, `saveSection`, `appendChangelog`; Context button added to project rows; event delegation on `#project-context-panel` using data-action pattern
+- `static/hub/index.html` — `#project-context-panel` div with `#ctx-tabs` and `#ctx-body`; CSS for `.ctx-tab`, `.ctx-tab-active`, `.changelog-entry`; projects table header renamed to "Actions" (width 140px)
+
+Valid section names: `stack`, `file_map`, `patterns`, `completed`, `in_progress`, `planned`, `recent_changes`, `known_issues`, `conventions`, `agents`
+
+`recent_changes` is read-only in the UI — auto-generated from changelog. The Hub dashboard shows it via the changelog GET endpoint. PUT to `recent_changes` returns 400.
 
 ### feat: Agent Hub Phase 2 — canon store (commit e0b0a2c)
 Files changed:
