@@ -1823,6 +1823,26 @@ class HubProjectChangelog(Base):
     )
 
 
+class HubPersonaCategory(TimestampMixin, Base):
+    """Agent Hub persona category."""
+    __tablename__ = "hub_persona_categories"
+
+    id   = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+
+
+class HubPersona(TimestampMixin, Base):
+    """Agent Hub persona (system prompt draft/published)."""
+    __tablename__ = "hub_personas"
+
+    id                 = Column(String, primary_key=True, index=True)
+    name               = Column(String, nullable=False, unique=True)
+    content            = Column(Text, nullable=False, default="")
+    category           = Column(String, nullable=True)
+    status             = Column(String, nullable=False, default="draft")
+    odysseus_prompt_id = Column(String, nullable=True)
+    notes              = Column(Text, nullable=True)
+
 
 def _migrate_seed_email_account():
     """If email_accounts is empty and settings.json has legacy flat imap_host/smtp_host
@@ -1890,6 +1910,43 @@ def _migrate_seed_email_account():
             logging.getLogger(__name__).info("Seeded email_accounts 'Default' from settings.json")
     except Exception as e:
         logging.getLogger(__name__).warning(f"seed email account migration: {e}")
+
+
+def _migrate_add_hub_persona_tables():
+    """Create hub_persona_categories and hub_personas tables."""
+    try:
+        with engine.connect() as conn:
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            if "hub_persona_categories" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_persona_categories (
+                        id VARCHAR PRIMARY KEY,
+                        name VARCHAR NOT NULL UNIQUE,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                """))
+                logging.getLogger(__name__).info("Created hub_persona_categories table")
+            if "hub_personas" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_personas (
+                        id VARCHAR PRIMARY KEY,
+                        name VARCHAR NOT NULL UNIQUE,
+                        content TEXT NOT NULL DEFAULT '',
+                        category VARCHAR,
+                        status VARCHAR NOT NULL DEFAULT 'draft',
+                        odysseus_prompt_id VARCHAR,
+                        notes TEXT,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                """))
+                logging.getLogger(__name__).info("Created hub_personas table")
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"hub persona migration: {e}")
 
 
 def _migrate_add_hub_project_context_tables():
@@ -2075,6 +2132,7 @@ def init_db():
     _migrate_add_hub_tables()
     _migrate_add_hub_canon_table()
     _migrate_add_hub_project_context_tables()
+    _migrate_add_hub_persona_tables()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()

@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.database import SessionLocal, HubMessage, HubProject, HubCanon, HubProjectSection, HubProjectChangelog
-from src.auth_helpers import require_authenticated_request
+from core.database import SessionLocal, HubMessage, HubProject, HubCanon, HubProjectSection, HubProjectChangelog, HubPersona, HubPersonaCategory
+from src.auth_helpers import require_authenticated_request, effective_user
 from src.constants import STATIC_DIR
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,29 @@ class SectionUpdate(BaseModel):
 class ChangelogAppend(BaseModel):
     entry: str
     created_by: Optional[str] = None
+
+
+class PersonaCreate(BaseModel):
+    name: str
+    content: str
+    category: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PersonaUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CategoryCreate(BaseModel):
+    name: str
+
+
+class PersonaTest(BaseModel):
+    prompt: str
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +585,274 @@ def setup_hub_routes() -> APIRouter:
         finally:
             db.close()
 
+    # -----------------------------------------------------------------------
+    # Personas — categories MUST be registered before /{persona_id}
+    # -----------------------------------------------------------------------
+
+    @router.get("/personas/categories")
+    async def list_persona_categories(request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            cats = db.query(HubPersonaCategory).order_by(HubPersonaCategory.name).all()
+            return [_category_dict(c) for c in cats]
+        finally:
+            db.close()
+
+    @router.post("/personas/categories")
+    async def create_persona_category(body: CategoryCreate, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            cat = HubPersonaCategory(id=_short_id(), name=body.name, created_at=now, updated_at=now)
+            db.add(cat)
+            db.commit()
+            db.refresh(cat)
+            return _category_dict(cat)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            db.close()
+
+    @router.put("/personas/categories/{cat_id}")
+    async def rename_persona_category(cat_id: str, body: CategoryCreate, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            cat = db.query(HubPersonaCategory).filter(HubPersonaCategory.id == cat_id).first()
+            if not cat:
+                raise HTTPException(status_code=404, detail="Category not found")
+            old_name = cat.name
+            cat.name = body.name
+            cat.updated_at = _utcnow()
+            db.query(HubPersona).filter(HubPersona.category == old_name).update(
+                {"category": body.name}, synchronize_session=False
+            )
+            db.commit()
+            db.refresh(cat)
+            return _category_dict(cat)
+        finally:
+            db.close()
+
+    @router.delete("/personas/categories/{cat_id}")
+    async def delete_persona_category(cat_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            cat = db.query(HubPersonaCategory).filter(HubPersonaCategory.id == cat_id).first()
+            if not cat:
+                raise HTTPException(status_code=404, detail="Category not found")
+            db.query(HubPersona).filter(HubPersona.category == cat.name).update(
+                {"category": None}, synchronize_session=False
+            )
+            db.delete(cat)
+            db.commit()
+            return {"deleted": True}
+        finally:
+            db.close()
+
+    @router.post("/personas/import")
+    async def import_personas(request: Request):
+        require_authenticated_request(request)
+        preset_manager = request.app.state.preset_manager
+        templates = preset_manager.get_user_templates()
+        db = SessionLocal()
+        try:
+            imported = 0
+            skipped = 0
+            now = _utcnow()
+            for t in templates:
+                existing = db.query(HubPersona).filter(HubPersona.name == t["name"]).first()
+                if existing:
+                    skipped += 1
+                    continue
+                persona = HubPersona(
+                    id=_short_id(),
+                    name=t["name"],
+                    content=t.get("system_prompt", ""),
+                    status="published",
+                    odysseus_prompt_id=t["id"],
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(persona)
+                imported += 1
+            db.commit()
+            return {"imported": imported, "skipped": skipped}
+        finally:
+            db.close()
+
+    @router.get("/personas")
+    async def list_personas(request: Request, category: Optional[str] = None):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            q = db.query(HubPersona)
+            if category:
+                q = q.filter(HubPersona.category == category)
+            personas = q.order_by(HubPersona.updated_at.desc()).all()
+            return [_persona_dict(p) for p in personas]
+        finally:
+            db.close()
+
+    @router.post("/personas")
+    async def create_persona(body: PersonaCreate, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            persona = HubPersona(
+                id=_short_id(),
+                name=body.name,
+                content=body.content,
+                category=body.category,
+                notes=body.notes,
+                status="draft",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(persona)
+            db.commit()
+            db.refresh(persona)
+            return _persona_dict(persona)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            db.close()
+
+    @router.get("/personas/{persona_id}")
+    async def get_persona(persona_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            return _persona_dict(p)
+        finally:
+            db.close()
+
+    @router.put("/personas/{persona_id}")
+    async def update_persona(persona_id: str, body: PersonaUpdate, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            if body.name is not None:
+                p.name = body.name
+            if body.content is not None:
+                p.content = body.content
+            if body.category is not None:
+                p.category = body.category or None
+            if body.notes is not None:
+                p.notes = body.notes or None
+            p.updated_at = _utcnow()
+            if p.status == "published" and p.odysseus_prompt_id:
+                pm = request.app.state.preset_manager
+                pm.save_user_template({
+                    "id": p.odysseus_prompt_id,
+                    "name": p.name,
+                    "system_prompt": p.content,
+                    "temperature": 1.0,
+                    "max_tokens": 0,
+                })
+            db.commit()
+            db.refresh(p)
+            return _persona_dict(p)
+        finally:
+            db.close()
+
+    @router.delete("/personas/{persona_id}")
+    async def delete_persona(persona_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            if p.odysseus_prompt_id:
+                pm = request.app.state.preset_manager
+                pm.delete_user_template(p.odysseus_prompt_id)
+            db.delete(p)
+            db.commit()
+            return {"deleted": True}
+        finally:
+            db.close()
+
+    @router.post("/personas/{persona_id}/publish")
+    async def publish_persona(persona_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            pm = request.app.state.preset_manager
+            template_id = p.odysseus_prompt_id or f"user-{p.id}"
+            pm.save_user_template({
+                "id": template_id,
+                "name": p.name,
+                "system_prompt": p.content,
+                "temperature": 1.0,
+                "max_tokens": 0,
+            })
+            p.odysseus_prompt_id = template_id
+            p.status = "published"
+            p.updated_at = _utcnow()
+            db.commit()
+            db.refresh(p)
+            return _persona_dict(p)
+        finally:
+            db.close()
+
+    @router.post("/personas/{persona_id}/unpublish")
+    async def unpublish_persona(persona_id: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            if p.odysseus_prompt_id:
+                pm = request.app.state.preset_manager
+                pm.delete_user_template(p.odysseus_prompt_id)
+            p.odysseus_prompt_id = None
+            p.status = "draft"
+            p.updated_at = _utcnow()
+            db.commit()
+            db.refresh(p)
+            return _persona_dict(p)
+        finally:
+            db.close()
+
+    @router.post("/personas/{persona_id}/test")
+    async def test_persona(persona_id: str, body: PersonaTest, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                raise HTTPException(status_code=404, detail="Persona not found")
+            content = p.content
+        finally:
+            db.close()
+        from src.ai_interaction import _resolve_model
+        from src.llm_core import llm_call_async
+        messages = [
+            {"role": "system", "content": content},
+            {"role": "user", "content": body.prompt},
+        ]
+        try:
+            user = effective_user(request)
+            url, model, headers = _resolve_model(body.model or "", owner=user)
+            result = await llm_call_async(url, model, messages, temperature=1.0, max_tokens=1000, headers=headers)
+            return {"response": result}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router
 
 
@@ -602,4 +893,27 @@ def _canon_dict(r: HubCanon) -> dict:
         "source_note": r.source_note,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def _persona_dict(p: HubPersona) -> dict:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "content": p.content,
+        "category": p.category,
+        "status": p.status,
+        "odysseus_prompt_id": p.odysseus_prompt_id,
+        "notes": p.notes,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+def _category_dict(c: HubPersonaCategory) -> dict:
+    return {
+        "id": c.id,
+        "name": c.name,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }

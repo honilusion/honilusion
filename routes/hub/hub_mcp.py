@@ -383,6 +383,258 @@ def project_changelog(name: str, limit: int = 10) -> str:
         db.close()
 
 
+def _get_preset_manager():
+    from src.preset_manager import PresetManager
+    from src.constants import DATA_DIR
+    return PresetManager(DATA_DIR)
+
+
+@_hub_mcp.tool()
+def persona_list(category: Optional[str] = None) -> str:
+    """List all Hub personas, optionally filtered by category."""
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        q = db.query(HubPersona)
+        if category:
+            q = q.filter(HubPersona.category == category)
+        personas = q.order_by(HubPersona.updated_at.desc()).all()
+        if not personas:
+            return "No personas found"
+        lines = [f"Personas ({len(personas)}):\n"]
+        for p in personas:
+            cat = f" [{p.category}]" if p.category else ""
+            lines.append(f"- [{p.id}] {p.name} — {p.status}{cat}")
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_get(persona_id: str) -> str:
+    """Get full details and content of a persona by ID."""
+    if not persona_id:
+        return "Error: persona_id is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+        if not p:
+            return f"Persona '{persona_id}' not found"
+        lines = [
+            f"Persona: {p.name}",
+            f"ID: {p.id}",
+            f"Status: {p.status}",
+            f"Category: {p.category or '(none)'}",
+            f"Odysseus ID: {p.odysseus_prompt_id or '(not published)'}",
+            f"Notes: {p.notes or '(none)'}",
+            f"Updated: {p.updated_at.isoformat() if p.updated_at else '?'}",
+            "",
+            "--- Content ---",
+            p.content or "(empty)",
+        ]
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_create(name: str, content: str, category: Optional[str] = None, notes: Optional[str] = None) -> str:
+    """Create a new Hub persona (starts as draft)."""
+    if not name:
+        return "Error: name is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        now = _utcnow()
+        p = HubPersona(
+            id=_short_id(),
+            name=name,
+            content=content or "",
+            category=category,
+            notes=notes,
+            status="draft",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(p)
+        db.commit()
+        return f"Persona '{name}' created (id: {p.id})"
+    except Exception as e:
+        return f"Error creating persona: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_update(persona_id: str, name: Optional[str] = None, content: Optional[str] = None, category: Optional[str] = None, notes: Optional[str] = None) -> str:
+    """Update a persona's name, content, category, or notes."""
+    if not persona_id:
+        return "Error: persona_id is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+        if not p:
+            return f"Persona '{persona_id}' not found"
+        if name is not None:
+            p.name = name
+        if content is not None:
+            p.content = content
+        if category is not None:
+            p.category = category or None
+        if notes is not None:
+            p.notes = notes or None
+        p.updated_at = _utcnow()
+        if p.status == "published" and p.odysseus_prompt_id:
+            pm = _get_preset_manager()
+            pm.save_user_template({
+                "id": p.odysseus_prompt_id,
+                "name": p.name,
+                "system_prompt": p.content,
+                "temperature": 1.0,
+                "max_tokens": 0,
+            })
+        db.commit()
+        return f"Persona '{p.name}' updated"
+    except Exception as e:
+        return f"Error updating persona: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_delete(persona_id: str) -> str:
+    """Delete a persona (unpublishes from Odysseus first if published)."""
+    if not persona_id:
+        return "Error: persona_id is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+        if not p:
+            return f"Persona '{persona_id}' not found"
+        name = p.name
+        if p.odysseus_prompt_id:
+            pm = _get_preset_manager()
+            pm.delete_user_template(p.odysseus_prompt_id)
+        db.delete(p)
+        db.commit()
+        return f"Persona '{name}' deleted"
+    except Exception as e:
+        return f"Error deleting persona: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_publish(persona_id: str) -> str:
+    """Publish a persona to Odysseus's system prompt templates."""
+    if not persona_id:
+        return "Error: persona_id is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+        if not p:
+            return f"Persona '{persona_id}' not found"
+        pm = _get_preset_manager()
+        template_id = p.odysseus_prompt_id or f"user-{p.id}"
+        pm.save_user_template({
+            "id": template_id,
+            "name": p.name,
+            "system_prompt": p.content,
+            "temperature": 1.0,
+            "max_tokens": 0,
+        })
+        p.odysseus_prompt_id = template_id
+        p.status = "published"
+        p.updated_at = _utcnow()
+        db.commit()
+        return f"Persona '{p.name}' published to Odysseus (template id: {template_id})"
+    except Exception as e:
+        return f"Error publishing persona: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_unpublish(persona_id: str) -> str:
+    """Unpublish a persona from Odysseus system prompt templates (reverts to draft)."""
+    if not persona_id:
+        return "Error: persona_id is required"
+    from core.database import SessionLocal, HubPersona
+    db = SessionLocal()
+    try:
+        p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+        if not p:
+            return f"Persona '{persona_id}' not found"
+        if p.odysseus_prompt_id:
+            pm = _get_preset_manager()
+            pm.delete_user_template(p.odysseus_prompt_id)
+        p.odysseus_prompt_id = None
+        p.status = "draft"
+        p.updated_at = _utcnow()
+        db.commit()
+        return f"Persona '{p.name}' unpublished (reverted to draft)"
+    except Exception as e:
+        return f"Error unpublishing persona: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_import() -> str:
+    """Import all existing Odysseus system prompt templates as published personas."""
+    from core.database import SessionLocal, HubPersona
+    pm = _get_preset_manager()
+    templates = pm.get_user_templates()
+    db = SessionLocal()
+    try:
+        imported = 0
+        skipped = 0
+        now = _utcnow()
+        for t in templates:
+            existing = db.query(HubPersona).filter(HubPersona.name == t["name"]).first()
+            if existing:
+                skipped += 1
+                continue
+            p = HubPersona(
+                id=_short_id(),
+                name=t["name"],
+                content=t.get("system_prompt", ""),
+                status="published",
+                odysseus_prompt_id=t["id"],
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(p)
+            imported += 1
+        db.commit()
+        return f"Import complete: {imported} imported, {skipped} skipped (already exist)"
+    except Exception as e:
+        return f"Error importing personas: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def persona_category_list() -> str:
+    """List all persona categories."""
+    from core.database import SessionLocal, HubPersonaCategory
+    db = SessionLocal()
+    try:
+        cats = db.query(HubPersonaCategory).order_by(HubPersonaCategory.name).all()
+        if not cats:
+            return "No categories found"
+        lines = [f"Categories ({len(cats)}):\n"]
+        for c in cats:
+            lines.append(f"- [{c.id}] {c.name}")
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
 def get_hub_mcp_app():
     """Return the FastMCP ASGI sub-app and initialise the session manager.
 

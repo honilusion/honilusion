@@ -542,6 +542,7 @@ personal_docs_mgr = components["personal_docs_manager"]
 app.state.personal_docs_manager = personal_docs_mgr
 api_key_manager   = components["api_key_manager"]
 preset_manager    = components["preset_manager"]
+app.state.preset_manager = preset_manager
 chat_processor    = components["chat_processor"]
 research_handler  = components["research_handler"]
 app.state.research_handler = research_handler

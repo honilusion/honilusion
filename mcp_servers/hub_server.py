@@ -213,6 +213,112 @@ async def list_tools() -> list[Tool]:
                 "required": ["series"],
             },
         ),
+        Tool(
+            name="persona_list",
+            description="List all Hub personas, optionally filtered by category.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Filter by category name"},
+                },
+            },
+        ),
+        Tool(
+            name="persona_get",
+            description="Get full details and content of a persona by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                },
+                "required": ["persona_id"],
+            },
+        ),
+        Tool(
+            name="persona_create",
+            description="Create a new Hub persona (starts as draft).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Persona name"},
+                    "content": {"type": "string", "description": "System prompt content"},
+                    "category": {"type": "string", "description": "Optional category"},
+                    "notes": {"type": "string", "description": "Optional notes"},
+                },
+                "required": ["name", "content"],
+            },
+        ),
+        Tool(
+            name="persona_update",
+            description="Update a persona's name, content, category, or notes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                    "name": {"type": "string", "description": "New name"},
+                    "content": {"type": "string", "description": "New content"},
+                    "category": {"type": "string", "description": "New category"},
+                    "notes": {"type": "string", "description": "New notes"},
+                },
+                "required": ["persona_id"],
+            },
+        ),
+        Tool(
+            name="persona_delete",
+            description="Delete a persona (unpublishes from Odysseus first if published).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                },
+                "required": ["persona_id"],
+            },
+        ),
+        Tool(
+            name="persona_publish",
+            description="Publish a persona to Odysseus system prompt templates.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                },
+                "required": ["persona_id"],
+            },
+        ),
+        Tool(
+            name="persona_unpublish",
+            description="Unpublish a persona from Odysseus templates (reverts to draft).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                },
+                "required": ["persona_id"],
+            },
+        ),
+        Tool(
+            name="persona_import",
+            description="Import all existing Odysseus system prompt templates as published personas.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="persona_test",
+            description="Test a persona by sending it a prompt and returning the AI response.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "persona_id": {"type": "string", "description": "Persona ID"},
+                    "prompt": {"type": "string", "description": "Test prompt to send"},
+                    "model": {"type": "string", "description": "Model to use (optional)"},
+                },
+                "required": ["persona_id", "prompt"],
+            },
+        ),
+        Tool(
+            name="persona_category_list",
+            description="List all persona categories.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
@@ -611,6 +717,269 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             for r in rows:
                 src = f" [{r.source_note}]" if r.source_note else ""
                 lines.append(f"- {r.entity}: {r.fact}{src}")
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    def _get_preset_manager():
+        from src.preset_manager import PresetManager
+        from src.constants import DATA_DIR
+        return PresetManager(DATA_DIR)
+
+    if name == "persona_list":
+        from core.database import HubPersona
+        category = arguments.get("category", "").strip() or None
+        db = SessionLocal()
+        try:
+            q = db.query(HubPersona)
+            if category:
+                q = q.filter(HubPersona.category == category)
+            personas = q.order_by(HubPersona.updated_at.desc()).all()
+            if not personas:
+                return _text("No personas found")
+            lines = [f"Personas ({len(personas)}):\n"]
+            for p in personas:
+                cat = f" [{p.category}]" if p.category else ""
+                lines.append(f"- [{p.id}] {p.name} — {p.status}{cat}")
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "persona_get":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        if not persona_id:
+            return _text("Error: persona_id is required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            lines = [
+                f"Persona: {p.name}",
+                f"ID: {p.id}",
+                f"Status: {p.status}",
+                f"Category: {p.category or '(none)'}",
+                f"Odysseus ID: {p.odysseus_prompt_id or '(not published)'}",
+                f"Notes: {p.notes or '(none)'}",
+                f"Updated: {p.updated_at.isoformat() if p.updated_at else '?'}",
+                "",
+                "--- Content ---",
+                p.content or "(empty)",
+            ]
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "persona_create":
+        from core.database import HubPersona
+        pname = arguments.get("name", "").strip()
+        content = arguments.get("content", "")
+        category = arguments.get("category")
+        notes = arguments.get("notes")
+        if not pname:
+            return _text("Error: name is required")
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            p = HubPersona(
+                id=_short_id(),
+                name=pname,
+                content=content,
+                category=category,
+                notes=notes,
+                status="draft",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(p)
+            db.commit()
+            return _text(f"Persona '{pname}' created (id: {p.id})")
+        except Exception as e:
+            return _text(f"Error creating persona: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_update":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        if not persona_id:
+            return _text("Error: persona_id is required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            if "name" in arguments:
+                p.name = arguments["name"]
+            if "content" in arguments:
+                p.content = arguments["content"]
+            if "category" in arguments:
+                p.category = arguments["category"] or None
+            if "notes" in arguments:
+                p.notes = arguments["notes"] or None
+            p.updated_at = _utcnow()
+            if p.status == "published" and p.odysseus_prompt_id:
+                pm = _get_preset_manager()
+                pm.save_user_template({
+                    "id": p.odysseus_prompt_id,
+                    "name": p.name,
+                    "system_prompt": p.content,
+                    "temperature": 1.0,
+                    "max_tokens": 0,
+                })
+            db.commit()
+            return _text(f"Persona '{p.name}' updated")
+        except Exception as e:
+            return _text(f"Error updating persona: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_delete":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        if not persona_id:
+            return _text("Error: persona_id is required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            pname = p.name
+            if p.odysseus_prompt_id:
+                pm = _get_preset_manager()
+                pm.delete_user_template(p.odysseus_prompt_id)
+            db.delete(p)
+            db.commit()
+            return _text(f"Persona '{pname}' deleted")
+        except Exception as e:
+            return _text(f"Error deleting persona: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_publish":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        if not persona_id:
+            return _text("Error: persona_id is required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            pm = _get_preset_manager()
+            template_id = p.odysseus_prompt_id or f"user-{p.id}"
+            pm.save_user_template({
+                "id": template_id,
+                "name": p.name,
+                "system_prompt": p.content,
+                "temperature": 1.0,
+                "max_tokens": 0,
+            })
+            p.odysseus_prompt_id = template_id
+            p.status = "published"
+            p.updated_at = _utcnow()
+            db.commit()
+            return _text(f"Persona '{p.name}' published (template id: {template_id})")
+        except Exception as e:
+            return _text(f"Error publishing persona: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_unpublish":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        if not persona_id:
+            return _text("Error: persona_id is required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            if p.odysseus_prompt_id:
+                pm = _get_preset_manager()
+                pm.delete_user_template(p.odysseus_prompt_id)
+            p.odysseus_prompt_id = None
+            p.status = "draft"
+            p.updated_at = _utcnow()
+            db.commit()
+            return _text(f"Persona '{p.name}' unpublished (reverted to draft)")
+        except Exception as e:
+            return _text(f"Error unpublishing persona: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_import":
+        from core.database import HubPersona
+        pm = _get_preset_manager()
+        templates = pm.get_user_templates()
+        db = SessionLocal()
+        try:
+            imported = 0
+            skipped = 0
+            now = _utcnow()
+            for t in templates:
+                existing = db.query(HubPersona).filter(HubPersona.name == t["name"]).first()
+                if existing:
+                    skipped += 1
+                    continue
+                p = HubPersona(
+                    id=_short_id(),
+                    name=t["name"],
+                    content=t.get("system_prompt", ""),
+                    status="published",
+                    odysseus_prompt_id=t["id"],
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(p)
+                imported += 1
+            db.commit()
+            return _text(f"Import complete: {imported} imported, {skipped} skipped")
+        except Exception as e:
+            return _text(f"Error importing personas: {e}")
+        finally:
+            db.close()
+
+    elif name == "persona_test":
+        from core.database import HubPersona
+        persona_id = arguments.get("persona_id", "").strip()
+        prompt = arguments.get("prompt", "").strip()
+        model = arguments.get("model", "")
+        if not persona_id or not prompt:
+            return _text("Error: persona_id and prompt are required")
+        db = SessionLocal()
+        try:
+            p = db.query(HubPersona).filter(HubPersona.id == persona_id).first()
+            if not p:
+                return _text(f"Persona '{persona_id}' not found")
+            content = p.content
+        finally:
+            db.close()
+        try:
+            from src.ai_interaction import _resolve_model
+            from src.llm_core import llm_call_async
+            import asyncio
+            messages = [
+                {"role": "system", "content": content},
+                {"role": "user", "content": prompt},
+            ]
+            url, mdl, headers = _resolve_model(model or "")
+            result = asyncio.run(llm_call_async(url, mdl, messages, temperature=1.0, max_tokens=1000, headers=headers))
+            return _text(f"Response:\n\n{result}")
+        except Exception as e:
+            return _text(f"Error testing persona: {e}")
+
+    elif name == "persona_category_list":
+        from core.database import HubPersonaCategory
+        db = SessionLocal()
+        try:
+            cats = db.query(HubPersonaCategory).order_by(HubPersonaCategory.name).all()
+            if not cats:
+                return _text("No categories found")
+            lines = [f"Categories ({len(cats)}):\n"]
+            for c in cats:
+                lines.append(f"- [{c.id}] {c.name}")
             return _text("\n".join(lines))
         finally:
             db.close()

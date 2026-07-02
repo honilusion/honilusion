@@ -460,6 +460,242 @@ async function addCanon() {
   }
 }
 
+// ---- Personas ----
+
+let _editingPersonaId = null;
+
+async function loadPersonas() {
+  clearError('personas-error');
+  const category = document.getElementById('persona-category-filter').value;
+  const listEl = document.getElementById('persona-list');
+  try {
+    const path = category ? `/personas?category=${encodeURIComponent(category)}` : '/personas';
+    const personas = await apiFetch(path);
+    if (personas.length === 0) {
+      listEl.innerHTML = '<div class="empty-state">No personas yet. Click "+ New Persona" or "Import from Odysseus".</div>';
+      return;
+    }
+    listEl.innerHTML = personas.map(p => {
+      const catBadge = p.category ? `<span style="color:var(--blue)">[${esc(p.category)}]</span> ` : '';
+      const statusClass = p.status === 'published' ? 'status-published' : 'status-draft';
+      return `
+        <div class="persona-item${_editingPersonaId === p.id ? ' selected' : ''}" id="persona-item-${esc(p.id)}">
+          <div>
+            <div class="persona-name">${esc(p.name)}</div>
+            <div class="persona-meta">${catBadge}<span class="status-badge ${statusClass}">${esc(p.status)}</span>${p.notes ? ' — ' + esc(p.notes) : ''}</div>
+          </div>
+          <div class="persona-actions">
+            <button class="btn btn-ghost" data-action="edit-persona" data-id="${esc(p.id)}">Edit</button>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    showError('personas-error', e.message);
+    listEl.innerHTML = '';
+  }
+}
+
+async function loadPersonaCategoryFilter() {
+  try {
+    const cats = await apiFetch('/personas/categories');
+    const sel = document.getElementById('persona-category-filter');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">All</option>' +
+      cats.map(c => `<option value="${esc(c.name)}"${c.name === current ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  } catch (e) { /* ignore */ }
+}
+
+async function loadPersonaCategoryInputs() {
+  try {
+    const cats = await apiFetch('/personas/categories');
+    const sel = document.getElementById('persona-category-input');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">(none)</option>' +
+      cats.map(c => `<option value="${esc(c.name)}"${c.name === current ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  } catch (e) { /* ignore */ }
+}
+
+async function loadCategories() {
+  try {
+    const cats = await apiFetch('/personas/categories');
+    const el = document.getElementById('category-list');
+    if (cats.length === 0) {
+      el.innerHTML = '<span style="color:var(--text-dim);font-size:12px">(none)</span>';
+      return;
+    }
+    el.innerHTML = cats.map(c =>
+      `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">
+        ${esc(c.name)}
+        <button class="btn-ghost" style="border:none;padding:0 2px;cursor:pointer;color:var(--text-dim);font-size:11px" data-action="delete-category" data-id="${esc(c.id)}" data-name="${esc(c.name)}">✕</button>
+      </span>`
+    ).join('');
+  } catch (e) { /* ignore */ }
+}
+
+async function addCategory() {
+  const name = document.getElementById('new-category-input').value.trim();
+  if (!name) return;
+  try {
+    await apiFetch('/personas/categories', { method: 'POST', body: JSON.stringify({ name }) });
+    document.getElementById('new-category-input').value = '';
+    loadCategories();
+    loadPersonaCategoryFilter();
+    loadPersonaCategoryInputs();
+  } catch (e) {
+    showError('personas-error', 'Failed to add category: ' + e.message);
+  }
+}
+
+async function deleteCategory(id, name) {
+  if (!confirm(`Delete category "${name}"? Personas in this category will be uncategorized.`)) return;
+  try {
+    await apiFetch(`/personas/categories/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    loadCategories();
+    loadPersonaCategoryFilter();
+    loadPersonaCategoryInputs();
+    loadPersonas();
+  } catch (e) {
+    showError('personas-error', 'Failed to delete category: ' + e.message);
+  }
+}
+
+async function openPersonaEditor(id) {
+  clearError('persona-editor-error');
+  _editingPersonaId = id;
+  const panel = document.getElementById('persona-editor-panel');
+  panel.classList.remove('hidden');
+  await loadPersonaCategoryInputs();
+  if (!id) {
+    document.getElementById('persona-editor-title').textContent = 'New Persona';
+    document.getElementById('persona-name-input').value = '';
+    document.getElementById('persona-content-input').value = '';
+    document.getElementById('persona-notes-input').value = '';
+    document.getElementById('persona-category-input').value = '';
+    document.getElementById('persona-status-badge').classList.add('hidden');
+    document.getElementById('persona-publish-btn').classList.remove('hidden');
+    document.getElementById('persona-unpublish-btn').classList.add('hidden');
+    return;
+  }
+  try {
+    const p = await apiFetch(`/personas/${encodeURIComponent(id)}`);
+    document.getElementById('persona-editor-title').textContent = p.name;
+    document.getElementById('persona-name-input').value = p.name;
+    document.getElementById('persona-content-input').value = p.content;
+    document.getElementById('persona-notes-input').value = p.notes || '';
+    document.getElementById('persona-category-input').value = p.category || '';
+    const badge = document.getElementById('persona-status-badge');
+    badge.textContent = p.status.toUpperCase();
+    badge.className = `status-badge status-${p.status}`;
+    badge.classList.remove('hidden');
+    document.getElementById('persona-publish-btn').classList.toggle('hidden', p.status === 'published');
+    document.getElementById('persona-unpublish-btn').classList.toggle('hidden', p.status !== 'published');
+  } catch (e) {
+    showError('persona-editor-error', e.message);
+  }
+}
+
+function closePersonaEditor() {
+  _editingPersonaId = null;
+  document.getElementById('persona-editor-panel').classList.add('hidden');
+  document.getElementById('persona-test-result').textContent = '';
+}
+
+async function savePersona() {
+  clearError('persona-editor-error');
+  const name = document.getElementById('persona-name-input').value.trim();
+  const content = document.getElementById('persona-content-input').value;
+  const category = document.getElementById('persona-category-input').value || null;
+  const notes = document.getElementById('persona-notes-input').value.trim() || null;
+  if (!name) { showError('persona-editor-error', 'Name is required'); return; }
+  try {
+    if (_editingPersonaId) {
+      await apiFetch(`/personas/${encodeURIComponent(_editingPersonaId)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, content, category, notes }),
+      });
+      await openPersonaEditor(_editingPersonaId);
+    } else {
+      const p = await apiFetch('/personas', {
+        method: 'POST',
+        body: JSON.stringify({ name, content, category, notes }),
+      });
+      _editingPersonaId = p.id;
+      await openPersonaEditor(p.id);
+    }
+    loadPersonas();
+  } catch (e) {
+    showError('persona-editor-error', 'Save failed: ' + e.message);
+  }
+}
+
+async function publishPersona() {
+  if (!_editingPersonaId) return;
+  clearError('persona-editor-error');
+  try {
+    await apiFetch(`/personas/${encodeURIComponent(_editingPersonaId)}/publish`, { method: 'POST' });
+    await openPersonaEditor(_editingPersonaId);
+    loadPersonas();
+  } catch (e) {
+    showError('persona-editor-error', 'Publish failed: ' + e.message);
+  }
+}
+
+async function unpublishPersona() {
+  if (!_editingPersonaId) return;
+  clearError('persona-editor-error');
+  try {
+    await apiFetch(`/personas/${encodeURIComponent(_editingPersonaId)}/unpublish`, { method: 'POST' });
+    await openPersonaEditor(_editingPersonaId);
+    loadPersonas();
+  } catch (e) {
+    showError('persona-editor-error', 'Unpublish failed: ' + e.message);
+  }
+}
+
+async function deletePersona() {
+  if (!_editingPersonaId) return;
+  const name = document.getElementById('persona-name-input').value || _editingPersonaId;
+  if (!confirm(`Delete persona "${name}"? This cannot be undone.`)) return;
+  clearError('persona-editor-error');
+  try {
+    await apiFetch(`/personas/${encodeURIComponent(_editingPersonaId)}`, { method: 'DELETE' });
+    closePersonaEditor();
+    loadPersonas();
+  } catch (e) {
+    showError('persona-editor-error', 'Delete failed: ' + e.message);
+  }
+}
+
+async function testPersona() {
+  if (!_editingPersonaId) return;
+  const prompt = document.getElementById('persona-test-prompt').value.trim();
+  if (!prompt) { document.getElementById('persona-test-result').textContent = 'Enter a prompt first.'; return; }
+  const resultEl = document.getElementById('persona-test-result');
+  resultEl.textContent = 'Running test...';
+  try {
+    const r = await apiFetch(`/personas/${encodeURIComponent(_editingPersonaId)}/test`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+    resultEl.textContent = r.response;
+  } catch (e) {
+    resultEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function importPersonas() {
+  clearError('personas-error');
+  try {
+    const r = await apiFetch('/personas/import', { method: 'POST' });
+    await loadPersonas();
+    document.getElementById('personas-error').textContent = '';
+    document.getElementById('personas-error').classList.add('hidden');
+    alert(`Import complete: ${r.imported} imported, ${r.skipped} skipped.`);
+  } catch (e) {
+    showError('personas-error', 'Import failed: ' + e.message);
+  }
+}
+
 // ---- Auto-refresh ----
 
 function tick() {
@@ -474,6 +710,7 @@ function tick() {
 function refresh() {
   loadProjects();
   loadAgents();
+  loadPersonas();
   const agent = document.getElementById('inbox-agent-input').value;
   if (agent) loadInbox();
 }
@@ -528,6 +765,35 @@ document.getElementById('canon-body').addEventListener('click', function(e) {
   if (btn.dataset.action === 'delete-canon') deleteCanonRow(btn.dataset.series, btn.dataset.entity);
 });
 
+// Personas event listeners
+document.getElementById('persona-category-filter').addEventListener('change', loadPersonas);
+document.getElementById('persona-refresh-btn').addEventListener('click', loadPersonas);
+document.getElementById('persona-import-btn').addEventListener('click', importPersonas);
+document.getElementById('persona-new-btn').addEventListener('click', () => openPersonaEditor(null));
+document.getElementById('persona-save-btn').addEventListener('click', savePersona);
+document.getElementById('persona-publish-btn').addEventListener('click', publishPersona);
+document.getElementById('persona-unpublish-btn').addEventListener('click', unpublishPersona);
+document.getElementById('persona-delete-btn').addEventListener('click', deletePersona);
+document.getElementById('persona-test-btn').addEventListener('click', testPersona);
+document.getElementById('add-category-btn').addEventListener('click', addCategory);
+
+document.getElementById('persona-editor-panel').addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'close-persona-editor') closePersonaEditor();
+});
+
+document.getElementById('persona-list').addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'edit-persona') openPersonaEditor(btn.dataset.id);
+});
+
+document.getElementById('category-list').addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action="delete-category"]');
+  if (btn) deleteCategory(btn.dataset.id, btn.dataset.name);
+});
+
 // Init — restore saved token, populate dropdowns
 (function init() {
   const saved = localStorage.getItem('hub_bearer_token');
@@ -537,5 +803,8 @@ document.getElementById('canon-body').addEventListener('click', function(e) {
   loadProjects();
   loadAgents();
   loadSeriesList();
+  loadPersonas();
+  loadPersonaCategoryFilter();
+  loadCategories();
   startCountdown();
 })();
