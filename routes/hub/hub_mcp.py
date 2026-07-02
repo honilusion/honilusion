@@ -181,10 +181,10 @@ def project_list() -> str:
 
 @_hub_mcp.tool()
 def project_get(name: str) -> str:
-    """Get a specific Agent Hub project by name."""
+    """Get a specific Agent Hub project by name, including section names and last-updated times."""
     if not name:
         return "Error: name is required"
-    from core.database import SessionLocal, HubProject
+    from core.database import SessionLocal, HubProject, HubProjectSection
     db = SessionLocal()
     try:
         proj = db.query(HubProject).filter(HubProject.name == name).first()
@@ -194,10 +194,172 @@ def project_get(name: str) -> str:
             f"Project: {proj.name}",
             f"Status: {proj.status}",
             f"Owner: {proj.owner_agent or '(none)'}",
-            f"Notes: {proj.notes or '(none)'}",
             f"Created: {proj.created_at.isoformat() if proj.created_at else '?'}",
             f"Updated: {proj.updated_at.isoformat() if proj.updated_at else '?'}",
         ]
+        sections = (
+            db.query(HubProjectSection)
+            .filter(HubProjectSection.project_name == name)
+            .order_by(HubProjectSection.section)
+            .all()
+        )
+        if sections:
+            lines.append("Sections:")
+            for s in sections:
+                ts = s.updated_at.isoformat() if s.updated_at else "?"
+                by = f" (by {s.updated_by})" if s.updated_by else ""
+                lines.append(f"  - {s.section}: updated {ts}{by}")
+        else:
+            lines.append("Sections: (none — use project_update_section to add context)")
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def project_get_section(name: str, section: str) -> str:
+    """Get the content of a specific section for a project."""
+    if not name or not section:
+        return "Error: name and section are required"
+    from core.database import SessionLocal, HubProjectSection, HubProjectChangelog
+    db = SessionLocal()
+    try:
+        if section == "recent_changes":
+            entries = (
+                db.query(HubProjectChangelog)
+                .filter(HubProjectChangelog.project_name == name)
+                .order_by(HubProjectChangelog.created_at.desc())
+                .limit(20)
+                .all()
+            )
+            if not entries:
+                return f"No changelog entries for '{name}'"
+            lines = [f"Recent changes for '{name}' ({len(entries)}):\n"]
+            for e in entries:
+                ts = e.created_at.isoformat() if e.created_at else "?"
+                by = f" ({e.created_by})" if e.created_by else ""
+                lines.append(f"- [{ts}]{by} {e.entry}")
+            return "\n".join(lines)
+        row = (
+            db.query(HubProjectSection)
+            .filter(HubProjectSection.project_name == name,
+                    HubProjectSection.section == section)
+            .first()
+        )
+        if not row:
+            return f"Section '{section}' is empty for project '{name}'"
+        ts = row.updated_at.isoformat() if row.updated_at else "?"
+        by = f" (by {row.updated_by})" if row.updated_by else ""
+        return f"[{name}/{section}] updated {ts}{by}\n\n{row.content}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def project_update_section(name: str, section: str, content: str) -> str:
+    """Overwrite a project section's content."""
+    if not name or not section:
+        return "Error: name and section are required"
+    if section == "recent_changes":
+        return "Error: recent_changes is auto-generated — use project_log instead"
+    from core.database import SessionLocal, HubProjectSection
+    from datetime import datetime, timezone
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        row = (
+            db.query(HubProjectSection)
+            .filter(HubProjectSection.project_name == name,
+                    HubProjectSection.section == section)
+            .first()
+        )
+        if row:
+            row.content = content
+            row.updated_at = now
+            row.updated_by = "claude-web"
+        else:
+            row = HubProjectSection(
+                project_name=name,
+                section=section,
+                content=content,
+                updated_at=now,
+                updated_by="claude-web",
+            )
+            db.add(row)
+        db.commit()
+        return f"Section '{section}' updated for project '{name}'"
+    except Exception as e:
+        return f"Error updating section: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def project_log(name: str, entry: str) -> str:
+    """Append an entry to a project's changelog (auto-timestamps, auto-prunes at 50)."""
+    if not name or not entry:
+        return "Error: name and entry are required"
+    from core.database import SessionLocal, HubProjectChangelog
+    from datetime import datetime, timezone
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        log_entry = HubProjectChangelog(
+            project_name=name,
+            entry=entry,
+            created_at=now,
+            created_by="claude-web",
+        )
+        db.add(log_entry)
+        db.commit()
+        count = (
+            db.query(HubProjectChangelog)
+            .filter(HubProjectChangelog.project_name == name)
+            .count()
+        )
+        if count > 50:
+            oldest = [
+                r[0] for r in (
+                    db.query(HubProjectChangelog.id)
+                    .filter(HubProjectChangelog.project_name == name)
+                    .order_by(HubProjectChangelog.created_at.asc())
+                    .limit(count - 50)
+                    .all()
+                )
+            ]
+            db.query(HubProjectChangelog).filter(
+                HubProjectChangelog.id.in_(oldest)
+            ).delete(synchronize_session=False)
+            db.commit()
+        return f"Changelog entry added for project '{name}'"
+    except Exception as e:
+        return f"Error adding changelog entry: {e}"
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def project_changelog(name: str, limit: int = 10) -> str:
+    """Get recent changelog entries for a project (newest first)."""
+    if not name:
+        return "Error: name is required"
+    from core.database import SessionLocal, HubProjectChangelog
+    db = SessionLocal()
+    try:
+        entries = (
+            db.query(HubProjectChangelog)
+            .filter(HubProjectChangelog.project_name == name)
+            .order_by(HubProjectChangelog.created_at.desc())
+            .limit(max(1, min(limit, 100)))
+            .all()
+        )
+        if not entries:
+            return f"No changelog entries for '{name}'"
+        lines = [f"Changelog for '{name}' (last {len(entries)}):\n"]
+        for e in entries:
+            ts = e.created_at.isoformat() if e.created_at else "?"
+            by = f" ({e.created_by})" if e.created_by else ""
+            lines.append(f"- [{ts}]{by} {e.entry}")
         return "\n".join(lines)
     finally:
         db.close()

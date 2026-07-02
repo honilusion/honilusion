@@ -157,8 +157,9 @@ async function loadProjects() {
           <td>
             <input id="proj-notes-${esc(p.id)}" value="${esc(p.notes || '')}" placeholder="—">
           </td>
-          <td>
+          <td style="white-space:nowrap">
             <button class="btn btn-ghost" data-action="save-project" data-name="${esc(p.name)}" data-id="${esc(p.id)}">Save</button>
+            <button class="btn btn-ghost" style="margin-left:4px" data-action="open-context" data-name="${esc(p.name)}">Context</button>
           </td>
         </tr>`;
     }).join('');
@@ -180,6 +181,112 @@ async function saveProjectRow(name, id) {
     loadProjects();
   } catch (e) {
     showError('projects-error', 'Save failed: ' + e.message);
+  }
+}
+
+// ---- Project Context ----
+
+const VALID_SECTIONS = ['stack','file_map','patterns','completed','in_progress','planned','recent_changes','known_issues','conventions','agents'];
+let _contextProject = null;
+
+async function openProjectContext(name) {
+  _contextProject = name;
+  document.getElementById('ctx-project-name').textContent = name;
+  document.getElementById('project-context-panel').classList.remove('hidden');
+  clearError('ctx-error');
+  try {
+    const sections = await apiFetch(`/projects/${encodeURIComponent(name)}/sections`);
+    renderContextTabs(sections);
+  } catch (e) {
+    showError('ctx-error', e.message);
+  }
+}
+
+function closeProjectContext() {
+  document.getElementById('project-context-panel').classList.add('hidden');
+  _contextProject = null;
+}
+
+function renderContextTabs(sectionMeta) {
+  const metaMap = {};
+  sectionMeta.forEach(s => { metaMap[s.section] = s; });
+  const tabsEl = document.getElementById('ctx-tabs');
+  tabsEl.innerHTML = VALID_SECTIONS.map(s => {
+    const has = metaMap[s];
+    const label = s.replace(/_/g, ' ') + (has && s !== 'recent_changes' ? ' ✓' : '');
+    return `<button class="ctx-tab" data-action="ctx-tab" data-section="${esc(s)}">${esc(label)}</button>`;
+  }).join('');
+  selectContextTab('stack');
+}
+
+async function selectContextTab(section) {
+  document.querySelectorAll('.ctx-tab').forEach(b => {
+    b.classList.toggle('ctx-tab-active', b.dataset.section === section);
+  });
+  const body = document.getElementById('ctx-body');
+  clearError('ctx-error');
+  body.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    if (section === 'recent_changes') {
+      const entries = await apiFetch(`/projects/${encodeURIComponent(_contextProject)}/changelog?limit=20`);
+      const listHtml = entries.length === 0
+        ? '<div class="empty-state" style="padding:12px 0">No changelog entries yet.</div>'
+        : entries.map(e => {
+            const ts = e.created_at ? new Date(e.created_at + 'Z').toLocaleString() : '';
+            const by = e.created_by ? ` · ${esc(e.created_by)}` : '';
+            return `<div class="changelog-entry"><span class="changelog-meta">${esc(ts)}${by}</span><span class="changelog-text">${esc(e.entry)}</span></div>`;
+          }).join('');
+      body.innerHTML = `
+        <div class="ctx-section-meta">Auto-generated from changelog — read only</div>
+        <div id="changelog-list">${listHtml}</div>
+        <div class="ctx-section-form">
+          <label>Append changelog entry</label>
+          <textarea id="ctx-changelog-entry" placeholder="What changed?" style="min-height:60px"></textarea>
+          <div style="margin-top:8px"><button class="btn btn-primary" data-action="append-changelog">Add Entry</button></div>
+        </div>`;
+    } else {
+      const data = await apiFetch(`/projects/${encodeURIComponent(_contextProject)}/sections/${encodeURIComponent(section)}`);
+      const ts = data.updated_at ? new Date(data.updated_at + 'Z').toLocaleString() : null;
+      const by = data.updated_by;
+      const metaStr = ts ? `Last updated ${esc(ts)}${by ? ' by ' + esc(by) : ''}` : 'Not yet set';
+      body.innerHTML = `
+        <div class="ctx-section-meta">${metaStr}</div>
+        <textarea id="ctx-section-content" style="min-height:200px;width:100%;font-family:monospace;font-size:12px">${esc(data.content || '')}</textarea>
+        <div style="margin-top:8px"><button class="btn btn-primary" data-action="save-section" data-section="${esc(section)}">Save</button></div>`;
+    }
+  } catch (e) {
+    showError('ctx-error', e.message);
+    body.innerHTML = '';
+  }
+}
+
+async function saveSection(section) {
+  clearError('ctx-error');
+  const content = document.getElementById('ctx-section-content').value;
+  try {
+    await apiFetch(`/projects/${encodeURIComponent(_contextProject)}/sections/${encodeURIComponent(section)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content, updated_by: null }),
+    });
+    selectContextTab(section);
+  } catch (e) {
+    showError('ctx-error', 'Save failed: ' + e.message);
+  }
+}
+
+async function appendChangelog() {
+  clearError('ctx-error');
+  const entry = document.getElementById('ctx-changelog-entry').value.trim();
+  if (!entry) { showError('ctx-error', 'Entry cannot be empty'); return; }
+  try {
+    await apiFetch(`/projects/${encodeURIComponent(_contextProject)}/changelog`, {
+      method: 'POST',
+      body: JSON.stringify({ entry, created_by: null }),
+    });
+    document.getElementById('ctx-changelog-entry').value = '';
+    selectContextTab('recent_changes');
+  } catch (e) {
+    showError('ctx-error', 'Failed: ' + e.message);
   }
 }
 
@@ -337,10 +444,22 @@ document.getElementById('inbox-list').addEventListener('click', function(e) {
   if (btn) markRead(btn.dataset.id);
 });
 
-// Event delegation for dynamically rendered project row save buttons
+// Event delegation for project row buttons (save + context)
 document.getElementById('projects-body').addEventListener('click', function(e) {
-  const btn = e.target.closest('[data-action="save-project"]');
-  if (btn) saveProjectRow(btn.dataset.name, btn.dataset.id);
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'save-project') saveProjectRow(btn.dataset.name, btn.dataset.id);
+  if (btn.dataset.action === 'open-context') openProjectContext(btn.dataset.name);
+});
+
+// Event delegation for project context panel
+document.getElementById('project-context-panel').addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'ctx-tab') selectContextTab(btn.dataset.section);
+  if (btn.dataset.action === 'save-section') saveSection(btn.dataset.section);
+  if (btn.dataset.action === 'append-changelog') appendChangelog();
+  if (btn.dataset.action === 'close-context') closeProjectContext();
 });
 
 document.getElementById('load-canon-btn').addEventListener('click', loadCanon);

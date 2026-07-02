@@ -1792,6 +1792,37 @@ class HubCanon(TimestampMixin, Base):
     )
 
 
+class HubProjectSection(Base):
+    """Agent Hub project context section — named free-text sections per project."""
+    __tablename__ = "hub_project_sections"
+
+    id           = Column(Integer, primary_key=True)
+    project_name = Column(String, nullable=False)
+    section      = Column(String, nullable=False)
+    content      = Column(Text, nullable=False, default="")
+    updated_at   = Column(DateTime, nullable=False)
+    updated_by   = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_hub_project_sections_proj_sec", "project_name", "section", unique=True),
+    )
+
+
+class HubProjectChangelog(Base):
+    """Agent Hub project changelog — append-only event log per project."""
+    __tablename__ = "hub_project_changelog"
+
+    id           = Column(Integer, primary_key=True)
+    project_name = Column(String, nullable=False)
+    entry        = Column(Text, nullable=False)
+    created_at   = Column(DateTime, nullable=False)
+    created_by   = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_hub_project_changelog_name_ts", "project_name", "created_at"),
+    )
+
+
 
 def _migrate_seed_email_account():
     """If email_accounts is empty and settings.json has legacy flat imap_host/smtp_host
@@ -1859,6 +1890,68 @@ def _migrate_seed_email_account():
             logging.getLogger(__name__).info("Seeded email_accounts 'Default' from settings.json")
     except Exception as e:
         logging.getLogger(__name__).warning(f"seed email account migration: {e}")
+
+
+def _migrate_add_hub_project_context_tables():
+    """Create hub_project_sections and hub_project_changelog tables; migrate notes → completed."""
+    try:
+        with engine.connect() as conn:
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+
+            if "hub_project_sections" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_project_sections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        project_name VARCHAR NOT NULL,
+                        section VARCHAR NOT NULL,
+                        content TEXT NOT NULL DEFAULT '',
+                        updated_at DATETIME NOT NULL,
+                        updated_by VARCHAR,
+                        UNIQUE(project_name, section)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_hub_project_sections_proj_sec "
+                    "ON hub_project_sections(project_name, section)"
+                ))
+                logging.getLogger(__name__).info("Created hub_project_sections table")
+                if "hub_projects" in existing:
+                    now = utcnow_naive()
+                    projects = conn.execute(text(
+                        "SELECT name, notes FROM hub_projects WHERE notes IS NOT NULL AND notes != ''"
+                    )).fetchall()
+                    for row in projects:
+                        conn.execute(text("""
+                            INSERT OR IGNORE INTO hub_project_sections
+                              (project_name, section, content, updated_at, updated_by)
+                            VALUES (:name, 'completed', :content, :now, 'migration')
+                        """), {"name": row[0], "content": row[1], "now": now})
+                    if projects:
+                        logging.getLogger(__name__).info(
+                            f"Migrated notes for {len(projects)} projects to completed section"
+                        )
+
+            if "hub_project_changelog" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_project_changelog (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        project_name VARCHAR NOT NULL,
+                        entry TEXT NOT NULL,
+                        created_at DATETIME NOT NULL,
+                        created_by VARCHAR
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_hub_project_changelog_name_ts "
+                    "ON hub_project_changelog(project_name, created_at)"
+                ))
+                logging.getLogger(__name__).info("Created hub_project_changelog table")
+
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"hub project context migration: {e}")
 
 
 def _migrate_add_hub_canon_table():
@@ -1981,6 +2074,7 @@ def init_db():
     _migrate_add_assistant_columns()
     _migrate_add_hub_tables()
     _migrate_add_hub_canon_table()
+    _migrate_add_hub_project_context_tables()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()

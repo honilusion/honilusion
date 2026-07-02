@@ -117,6 +117,55 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="project_get_section",
+            description="Get the content of a specific section for a project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name"},
+                    "section": {"type": "string", "description": "Section name (stack, file_map, patterns, completed, in_progress, planned, recent_changes, known_issues, conventions, agents)"},
+                },
+                "required": ["name", "section"],
+            },
+        ),
+        Tool(
+            name="project_update_section",
+            description="Overwrite a project section's content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name"},
+                    "section": {"type": "string", "description": "Section name"},
+                    "content": {"type": "string", "description": "New content for the section"},
+                },
+                "required": ["name", "section", "content"],
+            },
+        ),
+        Tool(
+            name="project_log",
+            description="Append an entry to a project's changelog (auto-timestamps).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name"},
+                    "entry": {"type": "string", "description": "Changelog entry text"},
+                },
+                "required": ["name", "entry"],
+            },
+        ),
+        Tool(
+            name="project_changelog",
+            description="Get recent changelog entries for a project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name"},
+                    "limit": {"type": "integer", "description": "Max entries to return (default 10)"},
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
             name="canon_get",
             description="Get a canon fact for a specific entity within a series.",
             inputSchema={
@@ -289,6 +338,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _text("Error: name is required")
         db = SessionLocal()
         try:
+            from core.database import HubProjectSection
             proj = db.query(HubProject).filter(HubProject.name == pname).first()
             if not proj:
                 return _text(f"Project '{pname}' not found")
@@ -296,10 +346,167 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 f"Project: {proj.name}",
                 f"Status: {proj.status}",
                 f"Owner: {proj.owner_agent or '(none)'}",
-                f"Notes: {proj.notes or '(none)'}",
                 f"Created: {proj.created_at.isoformat() if proj.created_at else '?'}",
                 f"Updated: {proj.updated_at.isoformat() if proj.updated_at else '?'}",
             ]
+            sections = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == pname)
+                .order_by(HubProjectSection.section)
+                .all()
+            )
+            if sections:
+                lines.append("Sections:")
+                for s in sections:
+                    ts = s.updated_at.isoformat() if s.updated_at else "?"
+                    by = f" (by {s.updated_by})" if s.updated_by else ""
+                    lines.append(f"  - {s.section}: updated {ts}{by}")
+            else:
+                lines.append("Sections: (none — use project_update_section to add context)")
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "project_get_section":
+        pname = arguments.get("name", "").strip()
+        section = arguments.get("section", "").strip()
+        if not pname or not section:
+            return _text("Error: name and section are required")
+        db = SessionLocal()
+        try:
+            from core.database import HubProjectSection, HubProjectChangelog
+            if section == "recent_changes":
+                entries = (
+                    db.query(HubProjectChangelog)
+                    .filter(HubProjectChangelog.project_name == pname)
+                    .order_by(HubProjectChangelog.created_at.desc())
+                    .limit(20)
+                    .all()
+                )
+                if not entries:
+                    return _text(f"No changelog entries for '{pname}'")
+                lines = [f"Recent changes for '{pname}' ({len(entries)}):\n"]
+                for e in entries:
+                    ts = e.created_at.isoformat() if e.created_at else "?"
+                    by = f" ({e.created_by})" if e.created_by else ""
+                    lines.append(f"- [{ts}]{by} {e.entry}")
+                return _text("\n".join(lines))
+            row = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == pname,
+                        HubProjectSection.section == section)
+                .first()
+            )
+            if not row:
+                return _text(f"Section '{section}' is empty for project '{pname}'")
+            ts = row.updated_at.isoformat() if row.updated_at else "?"
+            by = f" (by {row.updated_by})" if row.updated_by else ""
+            return _text(f"[{pname}/{section}] updated {ts}{by}\n\n{row.content}")
+        finally:
+            db.close()
+
+    elif name == "project_update_section":
+        pname = arguments.get("name", "").strip()
+        section = arguments.get("section", "").strip()
+        content = arguments.get("content", "")
+        if not pname or not section:
+            return _text("Error: name and section are required")
+        if section == "recent_changes":
+            return _text("Error: recent_changes is auto-generated from changelog — use project_log instead")
+        db = SessionLocal()
+        try:
+            from core.database import HubProjectSection
+            now = _utcnow()
+            row = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == pname,
+                        HubProjectSection.section == section)
+                .first()
+            )
+            if row:
+                row.content = content
+                row.updated_at = now
+                row.updated_by = "claude-code-server"
+            else:
+                row = HubProjectSection(
+                    project_name=pname,
+                    section=section,
+                    content=content,
+                    updated_at=now,
+                    updated_by="claude-code-server",
+                )
+                db.add(row)
+            db.commit()
+            return _text(f"Section '{section}' updated for project '{pname}'")
+        except Exception as e:
+            return _text(f"Error updating section: {e}")
+        finally:
+            db.close()
+
+    elif name == "project_log":
+        pname = arguments.get("name", "").strip()
+        entry = arguments.get("entry", "").strip()
+        if not pname or not entry:
+            return _text("Error: name and entry are required")
+        db = SessionLocal()
+        try:
+            from core.database import HubProjectChangelog
+            now = _utcnow()
+            log_entry = HubProjectChangelog(
+                project_name=pname,
+                entry=entry,
+                created_at=now,
+                created_by="claude-code-server",
+            )
+            db.add(log_entry)
+            db.commit()
+            count = (
+                db.query(HubProjectChangelog)
+                .filter(HubProjectChangelog.project_name == pname)
+                .count()
+            )
+            if count > 50:
+                oldest = [
+                    r[0] for r in (
+                        db.query(HubProjectChangelog.id)
+                        .filter(HubProjectChangelog.project_name == pname)
+                        .order_by(HubProjectChangelog.created_at.asc())
+                        .limit(count - 50)
+                        .all()
+                    )
+                ]
+                db.query(HubProjectChangelog).filter(
+                    HubProjectChangelog.id.in_(oldest)
+                ).delete(synchronize_session=False)
+                db.commit()
+            return _text(f"Changelog entry added for project '{pname}'")
+        except Exception as e:
+            return _text(f"Error adding changelog entry: {e}")
+        finally:
+            db.close()
+
+    elif name == "project_changelog":
+        pname = arguments.get("name", "").strip()
+        limit = max(1, min(int(arguments.get("limit", 10)), 100))
+        if not pname:
+            return _text("Error: name is required")
+        db = SessionLocal()
+        try:
+            from core.database import HubProjectChangelog
+            entries = (
+                db.query(HubProjectChangelog)
+                .filter(HubProjectChangelog.project_name == pname)
+                .order_by(HubProjectChangelog.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            if not entries:
+                return _text(f"No changelog entries for '{pname}'")
+            lines = [f"Changelog for '{pname}' (last {len(entries)}):\n"]
+            for e in entries:
+                ts = e.created_at.isoformat() if e.created_at else "?"
+                by = f" ({e.created_by})" if e.created_by else ""
+                lines.append(f"- [{ts}]{by} {e.entry}")
             return _text("\n".join(lines))
         finally:
             db.close()

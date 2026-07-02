@@ -152,6 +152,23 @@
     #canon-body textarea { min-height: 50px; font-size: 12px; }
     #canon-body input { font-size: 12px; }
 
+    /* Project context panel */
+    .ctx-tabs-bar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; }
+    .ctx-tab {
+      padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+      background: transparent; color: var(--text-dim); cursor: pointer; font: inherit; font-size: 12px;
+    }
+    .ctx-tab:hover { color: var(--text); border-color: var(--text-dim); }
+    .ctx-tab-active { background: var(--accent-dim); color: var(--text); border-color: var(--accent); }
+    .ctx-section-meta { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+    .ctx-section-form { margin-top: 14px; }
+    .changelog-entry {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 8px 0; border-bottom: 1px solid var(--border);
+    }
+    .changelog-meta { font-size: 11px; color: var(--text-dim); }
+    .changelog-text { font-size: 13px; white-space: pre-wrap; }
+
     /* Error */
     .error-banner {
       background: #3a1e1e; border: 1px solid var(--red); color: var(--red);
@@ -253,13 +270,29 @@
             <th>Status</th>
             <th>Owner</th>
             <th>Notes</th>
-            <th style="width:80px">Save</th>
+            <th style="width:140px">Actions</th>
           </tr>
         </thead>
         <tbody id="projects-body">
           <tr><td colspan="5" class="empty-state" style="text-align:center;padding:20px">Loading...</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Project context panel -->
+    <div id="project-context-panel" class="hidden" style="margin-top:16px">
+      <div class="card">
+        <div class="card-body">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <strong id="ctx-project-name" style="font-size:15px"></strong>
+            <span style="color:var(--text-dim);font-size:12px">— Project Context</span>
+            <button class="btn btn-ghost" style="margin-left:auto" data-action="close-context">Close ✕</button>
+          </div>
+          <div id="ctx-error" class="error-banner hidden" style="margin-bottom:10px"></div>
+          <div id="ctx-tabs" class="ctx-tabs-bar"></div>
+          <div id="ctx-body"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Add project -->

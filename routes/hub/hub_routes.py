@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.database import SessionLocal, HubMessage, HubProject, HubCanon
+from core.database import SessionLocal, HubMessage, HubProject, HubCanon, HubProjectSection, HubProjectChangelog
 from src.auth_helpers import require_authenticated_request
 from src.constants import STATIC_DIR
 
@@ -55,6 +55,16 @@ class CanonUpsert(BaseModel):
     entity: str
     fact: str
     source_note: Optional[str] = None
+
+
+class SectionUpdate(BaseModel):
+    content: str
+    updated_by: Optional[str] = None
+
+
+class ChangelogAppend(BaseModel):
+    entry: str
+    created_by: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +328,192 @@ def setup_hub_routes() -> APIRouter:
             db.delete(row)
             db.commit()
             return {"deleted": True}
+        finally:
+            db.close()
+
+    # -----------------------------------------------------------------------
+    # Project Sections
+    # -----------------------------------------------------------------------
+
+    @router.get("/projects/{name}/sections")
+    async def list_project_sections(name: str, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            proj = db.query(HubProject).filter(HubProject.name == name).first()
+            if not proj:
+                raise HTTPException(status_code=404, detail="Project not found")
+            rows = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == name)
+                .order_by(HubProjectSection.section)
+                .all()
+            )
+            return [
+                {
+                    "section": r.section,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                    "updated_by": r.updated_by,
+                }
+                for r in rows
+            ]
+        finally:
+            db.close()
+
+    @router.get("/projects/{name}/sections/{section}")
+    async def get_project_section(name: str, section: str, request: Request):
+        require_authenticated_request(request)
+        if section == "recent_changes":
+            db = SessionLocal()
+            try:
+                entries = (
+                    db.query(HubProjectChangelog)
+                    .filter(HubProjectChangelog.project_name == name)
+                    .order_by(HubProjectChangelog.created_at.desc())
+                    .limit(20)
+                    .all()
+                )
+                lines = [
+                    f"[{e.created_at.isoformat() if e.created_at else '?'}]"
+                    f"{(' (' + e.created_by + ')') if e.created_by else ''} {e.entry}"
+                    for e in entries
+                ]
+                content = "\n".join(lines) if lines else "(no changelog entries)"
+                return {"section": "recent_changes", "content": content,
+                        "updated_at": None, "updated_by": None}
+            finally:
+                db.close()
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == name,
+                        HubProjectSection.section == section)
+                .first()
+            )
+            if not row:
+                return {"section": section, "content": "", "updated_at": None, "updated_by": None}
+            return {
+                "section": row.section,
+                "content": row.content,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "updated_by": row.updated_by,
+            }
+        finally:
+            db.close()
+
+    @router.put("/projects/{name}/sections/{section}")
+    async def update_project_section(name: str, section: str, body: SectionUpdate, request: Request):
+        require_authenticated_request(request)
+        if section == "recent_changes":
+            raise HTTPException(status_code=400,
+                                detail="recent_changes is auto-generated from changelog")
+        db = SessionLocal()
+        try:
+            proj = db.query(HubProject).filter(HubProject.name == name).first()
+            if not proj:
+                raise HTTPException(status_code=404, detail="Project not found")
+            now = _utcnow()
+            row = (
+                db.query(HubProjectSection)
+                .filter(HubProjectSection.project_name == name,
+                        HubProjectSection.section == section)
+                .first()
+            )
+            if row:
+                row.content = body.content
+                row.updated_at = now
+                row.updated_by = body.updated_by
+            else:
+                row = HubProjectSection(
+                    project_name=name,
+                    section=section,
+                    content=body.content,
+                    updated_at=now,
+                    updated_by=body.updated_by,
+                )
+                db.add(row)
+            db.commit()
+            db.refresh(row)
+            return {
+                "section": row.section,
+                "content": row.content,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "updated_by": row.updated_by,
+            }
+        finally:
+            db.close()
+
+    # -----------------------------------------------------------------------
+    # Project Changelog
+    # -----------------------------------------------------------------------
+
+    @router.post("/projects/{name}/changelog")
+    async def append_changelog(name: str, body: ChangelogAppend, request: Request):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            now = _utcnow()
+            entry = HubProjectChangelog(
+                project_name=name,
+                entry=body.entry,
+                created_at=now,
+                created_by=body.created_by,
+            )
+            db.add(entry)
+            db.commit()
+            count = (
+                db.query(HubProjectChangelog)
+                .filter(HubProjectChangelog.project_name == name)
+                .count()
+            )
+            if count > 50:
+                oldest_ids = [
+                    r[0] for r in (
+                        db.query(HubProjectChangelog.id)
+                        .filter(HubProjectChangelog.project_name == name)
+                        .order_by(HubProjectChangelog.created_at.asc())
+                        .limit(count - 50)
+                        .all()
+                    )
+                ]
+                db.query(HubProjectChangelog).filter(
+                    HubProjectChangelog.id.in_(oldest_ids)
+                ).delete(synchronize_session=False)
+                db.commit()
+            db.refresh(entry)
+            return {
+                "id": entry.id,
+                "project_name": entry.project_name,
+                "entry": entry.entry,
+                "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                "created_by": entry.created_by,
+            }
+        finally:
+            db.close()
+
+    @router.get("/projects/{name}/changelog")
+    async def get_changelog(name: str, request: Request, limit: int = 10):
+        require_authenticated_request(request)
+        db = SessionLocal()
+        try:
+            entries = (
+                db.query(HubProjectChangelog)
+                .filter(HubProjectChangelog.project_name == name)
+                .order_by(HubProjectChangelog.created_at.desc())
+                .limit(max(1, min(limit, 100)))
+                .all()
+            )
+            return [
+                {
+                    "id": e.id,
+                    "project_name": e.project_name,
+                    "entry": e.entry,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                    "created_by": e.created_by,
+                }
+                for e in entries
+            ]
         finally:
             db.close()
 
