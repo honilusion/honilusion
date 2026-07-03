@@ -803,6 +803,9 @@ app.include_router(setup_companion_routes())
 from routes.hub import setup_hub_routes
 app.include_router(setup_hub_routes())
 
+from routes.usage_routes import setup_usage_routes
+app.include_router(setup_usage_routes())
+
 from routes.hub.hub_mcp import get_hub_mcp_app as _get_hub_mcp_app, _hub_mcp as _hub_mcp_server
 _hub_mcp_asgi = _get_hub_mcp_app()
 app.mount("/api/hub/mcp", _hub_mcp_asgi)
@@ -968,6 +971,11 @@ async def _startup_event():
         _startup_tasks.append(start_bg_monitor())
     except Exception as _e:
         logger.warning("Failed to start background-job monitor: %s", _e)
+    try:
+        from routes.usage_routes import start_usage_poller
+        _startup_tasks.append(start_usage_poller())
+    except Exception as _e:
+        logger.warning("Failed to start usage poller: %s", _e)
     # MCP servers can be slow or blocked by local tooling. Connect them after
     # the web server is accepting traffic instead of delaying the whole UI.
     async def _startup_mcp_connections():

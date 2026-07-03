@@ -73,6 +73,7 @@ class SkillUpdateRequest(BaseModel):
     version: Optional[str] = None
     confidence: Optional[float] = None
     body_extra: Optional[str] = None
+    enabled: Optional[bool] = None
     # Old shape
     title: Optional[str] = None
     problem: Optional[str] = None
@@ -1624,6 +1625,26 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         if not match.get("audit_verdict"):
             _fire_skill_added(user)
         return {"ok": True}
+
+    @router.patch("/{skill_id}/enabled")
+    async def patch_skill_enabled(request: Request, skill_id: str):
+        """Toggle the enabled flag on a skill without changing any other fields."""
+        from fastapi import Query as _Q
+        user = _owner(request)
+        try:
+            body = await request.json()
+            enabled = bool(body.get("enabled", True))
+        except Exception:
+            raise HTTPException(400, "JSON body with 'enabled' bool required")
+        skills = skills_manager.load(owner=user)
+        match = next((s for s in skills if s.get("name") == skill_id or s.get("id") == skill_id), None)
+        if not match:
+            raise HTTPException(404, "Skill not found")
+        _verify_owner(match, user)
+        ok = skills_manager.update_skill(match.get("name"), {"enabled": enabled}, owner=user)
+        if not ok:
+            raise HTTPException(500, "Update failed")
+        return {"ok": True, "name": match.get("name"), "enabled": enabled}
 
     @router.delete("/{skill_id}")
     async def delete_skill(request: Request, skill_id: str):

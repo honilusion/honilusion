@@ -2423,6 +2423,8 @@ function initializeEventListeners() {
     'attach-btn':          '#overflow-attach-btn',
     'research-btn':        '#overflow-research-btn',
     'rail-new-chat':       '#rail-new-session',
+    'cc-usage-meter':      '#cc-usage-meter',
+    'cc-mascot':           '#cc-mascot',
   };
 
   // Keys hidden by default on first run (no localStorage yet)

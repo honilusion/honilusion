@@ -194,6 +194,8 @@ async function syncToggles() {
   await syncPrefToggle('auto-approve-skills-toggle', 'auto_approve_skills', 'Auto-approve skills enabled', 'Auto-approve skills disabled', false);
   await syncPrefSlider('skill-confidence-slider', 'skill_min_confidence', 'skill-confidence-label', 0.85);
   await syncPrefNumber('skill-max-input', 'skill_max_injected', 3);
+  await syncPrefSelect('skill-injection-mode', 'skill_injection_mode', 'index');
+  await syncPrefSelect('skill-prepass', 'skill_prepass', 'local_only');
 
   // Reflect the header toggle into the sidebar dim + modal body opacity.
   const headerToggle = document.getElementById('memory-enabled-header-toggle');
@@ -319,6 +321,38 @@ async function syncPrefNumber(elementId, prefKey, defaultVal) {
         });
         if (!res.ok) { showError('Failed to save preference'); return; }
         showToast(v === 0 ? 'No skills injected' : `Max injected skills: ${v}`);
+      } catch (e) {
+        console.error(`Failed to save ${prefKey} pref:`, e);
+        showError('Failed to save preference');
+      }
+    });
+  }
+}
+
+async function syncPrefSelect(elementId, prefKey, defaultVal) {
+  const sel = document.getElementById(elementId);
+  if (!sel) return;
+  try {
+    const res = await fetch(`${window.location.origin}/api/prefs/${prefKey}`);
+    if (res.ok) {
+      const data = await res.json();
+      const v = (data.value !== undefined && data.value !== null) ? String(data.value) : String(defaultVal);
+      if (sel.querySelector(`option[value="${CSS.escape(v)}"]`)) sel.value = v;
+    }
+  } catch (e) {
+    console.error(`Failed to load ${prefKey} pref:`, e);
+  }
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = '1';
+    sel.addEventListener('change', async () => {
+      try {
+        const res = await fetch(`${window.location.origin}/api/prefs/${prefKey}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: sel.value })
+        });
+        if (!res.ok) { showError('Failed to save preference'); return; }
+        showToast(`${prefKey}: ${sel.value}`);
       } catch (e) {
         console.error(`Failed to save ${prefKey} pref:`, e);
         showError('Failed to save preference');

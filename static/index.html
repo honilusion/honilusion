@@ -448,6 +448,22 @@
               <input type="number" id="skill-max-input" min="0" max="12" step="1" value="3" aria-label="Max skills to inject" style="flex-shrink:0;width:72px;background:var(--input-bg,var(--panel));color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px;text-align:right;font-variant-numeric:tabular-nums" />
             </div>
             <span class="admin-toggle-sub" style="display:block;margin-top:6px;opacity:0.5">Set to 0 to disable skill injection.</span>
+            <div class="admin-toggle-row" style="margin-top:10px;">
+              <span class="admin-toggle-sub" style="margin:0">Injection mode</span>
+              <select id="skill-injection-mode" style="flex-shrink:0;background:var(--input-bg,var(--panel));color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;">
+                <option value="index">Index only (fetch on demand)</option>
+                <option value="legacy">Legacy (inject full matched content)</option>
+              </select>
+            </div>
+            <span class="admin-toggle-sub" style="display:block;margin-top:4px;opacity:0.5">Index: agent calls manage_skills view when needed. Legacy: matched skills injected in full.</span>
+            <div class="admin-toggle-row" style="margin-top:10px;">
+              <span class="admin-toggle-sub" style="margin:0">Skill pre-pass (local models)</span>
+              <select id="skill-prepass" style="flex-shrink:0;background:var(--input-bg,var(--panel));color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;">
+                <option value="local_only">Local models only</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
+            <span class="admin-toggle-sub" style="display:block;margin-top:4px;opacity:0.5">Pre-pass runs a mini LLM call to identify and pre-load relevant skills for local models.</span>
           </div>
         </div>
       </div>
@@ -939,6 +955,65 @@
           </svg>
           <span class="grow">Theme</span>
         </div>
+      </div>
+    </div>
+    <!-- Claude Code usage meter -->
+    <div class="cc-usage-meter" id="cc-usage-meter">
+      <div class="cc-usage-label-row">
+        <span class="cc-usage-title">Claude Code</span>
+        <span class="cc-usage-stale" id="cc-stale">stale</span>
+      </div>
+      <div class="cc-bar-row" id="cc-5h-row">
+        <span class="cc-bar-label">5h</span>
+        <div class="cc-bar-track"><div class="cc-bar-fill" id="cc-5h-fill"></div></div>
+        <span class="cc-bar-pct" id="cc-5h-pct">—</span>
+        <div class="cc-mascot" id="cc-mascot" title="">
+          <svg viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- face circle -->
+            <circle cx="9" cy="9" r="8" fill="color-mix(in srgb, var(--fg) 10%, transparent)" stroke="var(--fg)" stroke-width="0.8" opacity="0.5"/>
+            <!-- neutral expression -->
+            <g class="m-neutral">
+              <circle cx="6.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <circle cx="11.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <line x1="6.5" y1="11.5" x2="11.5" y2="11.5" stroke="var(--fg)" stroke-width="1" stroke-linecap="round" opacity="0.6"/>
+            </g>
+            <!-- concerned expression -->
+            <g class="m-concerned">
+              <circle cx="6.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <circle cx="11.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <!-- raised brows -->
+              <path d="M5.5 6 Q6.5 5.2 7.5 6" stroke="var(--fg)" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.6"/>
+              <path d="M10.5 6 Q11.5 5.2 12.5 6" stroke="var(--fg)" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.6"/>
+              <!-- slight frown -->
+              <path d="M6.5 12 Q9 10.5 11.5 12" stroke="var(--fg)" stroke-width="1" stroke-linecap="round" fill="none" opacity="0.6"/>
+            </g>
+            <!-- sweating expression -->
+            <g class="m-sweat">
+              <circle cx="6.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <circle cx="11.5" cy="7.5" r="1" fill="var(--fg)" opacity="0.6"/>
+              <path d="M5.5 6 Q6.5 5.2 7.5 6" stroke="var(--fg)" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.6"/>
+              <path d="M10.5 6 Q11.5 5.2 12.5 6" stroke="var(--fg)" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.6"/>
+              <path d="M6.5 12 Q9 10.5 11.5 12" stroke="var(--fg)" stroke-width="1" stroke-linecap="round" fill="none" opacity="0.6"/>
+              <!-- animated sweat drop -->
+              <ellipse class="sweat-drop" cx="14" cy="6" rx="1" ry="1.4" fill="#7ecff5" opacity="0.8"/>
+            </g>
+            <!-- panic expression -->
+            <g class="m-panic">
+              <circle cx="6.5" cy="7.5" r="1.2" fill="var(--fg)" opacity="0.7"/>
+              <circle cx="11.5" cy="7.5" r="1.2" fill="var(--fg)" opacity="0.7"/>
+              <path d="M5.5 5.5 Q6.5 4.8 7.5 5.5" stroke="var(--fg)" stroke-width="0.9" stroke-linecap="round" fill="none" opacity="0.7"/>
+              <path d="M10.5 5.5 Q11.5 4.8 12.5 5.5" stroke="var(--fg)" stroke-width="0.9" stroke-linecap="round" fill="none" opacity="0.7"/>
+              <!-- open mouth frown -->
+              <path d="M6 12.5 Q9 10 12 12.5" stroke="var(--fg)" stroke-width="1.1" stroke-linecap="round" fill="none" opacity="0.7"/>
+              <ellipse class="sweat-drop" cx="14" cy="5.5" rx="1" ry="1.4" fill="#7ecff5" opacity="0.9"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <div class="cc-bar-row" id="cc-week-row">
+        <span class="cc-bar-label">Week</span>
+        <div class="cc-bar-track"><div class="cc-bar-fill" id="cc-week-fill"></div></div>
+        <span class="cc-bar-pct" id="cc-week-pct">—</span>
       </div>
     </div>
     <div class="sidebar-user-bar" id="sidebar-user-bar">
@@ -1906,6 +1981,113 @@
           </div>
         </div>
 
+        <!-- ═══ CLAUDE CODE USAGE METER SETTINGS ═══ -->
+        <div class="admin-card" id="cc-usage-settings-card" style="padding-bottom:10px;">
+          <h2 style="display:flex;align-items:center;gap:8px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            Claude Code Usage Meter
+          </h2>
+          <!-- Visibility toggles (stored in localStorage via UI_VIS_MAP) -->
+          <div class="vis-toggles" style="margin-bottom:10px;">
+            <label class="vis-row">
+              <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span>
+              <span class="vis-label">Show usage meter <span class="vis-hint">Claude Code rate-limit bars in sidebar</span></span>
+              <input type="checkbox" checked data-ui-key="cc-usage-meter"><span class="vis-switch"></span>
+            </label>
+            <label class="vis-row">
+              <span class="vis-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l2.5 2.5L16 9"/></svg></span>
+              <span class="vis-label">Show mascot <span class="vis-hint">Animated face reacting to usage</span></span>
+              <input type="checkbox" checked data-ui-key="cc-mascot"><span class="vis-switch"></span>
+            </label>
+          </div>
+          <!-- Frontend settings (stored in localStorage cc-usage-config) -->
+          <div style="font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;opacity:0.4;margin:6px 0 4px;">Display</div>
+          <div class="settings-col" style="gap:5px;">
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Frontend refresh (s)</label>
+              <input type="number" class="settings-input" id="cc-fe-poll-s" min="10" max="300" value="60" style="width:70px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Color: amber at (%)</label>
+              <input type="number" class="settings-input" id="cc-amber-pct" min="1" max="98" value="50" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Color: orange at (%)</label>
+              <input type="number" class="settings-input" id="cc-orange-pct" min="1" max="99" value="75" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Color: red at (%)</label>
+              <input type="number" class="settings-input" id="cc-red-pct" min="1" max="100" value="90" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Mascot: concerned at (%)</label>
+              <input type="number" class="settings-input" id="cc-mascot-concerned" min="1" max="98" value="50" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Mascot: sweat at (%)</label>
+              <input type="number" class="settings-input" id="cc-mascot-sweat" min="1" max="99" value="75" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Mascot: panic at (%)</label>
+              <input type="number" class="settings-input" id="cc-mascot-panic" min="1" max="100" value="90" style="width:60px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Alert threshold (%, 0=off)</label>
+              <input type="number" class="settings-input" id="cc-alert-pct" min="0" max="100" value="0" style="width:60px;">
+            </div>
+            <div class="settings-row" id="cc-alert-style-row">
+              <label class="settings-label" style="min-width:140px;">Alert style</label>
+              <select class="settings-select" id="cc-alert-style" style="width:100px;">
+                <option value="badge">Badge</option>
+                <option value="toast">Toast</option>
+              </select>
+            </div>
+          </div>
+          <!-- Backend settings (sent to PATCH /api/usage/claude-code/config) -->
+          <div style="font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;opacity:0.4;margin:10px 0 4px;">Backend (takes effect next poll)</div>
+          <div class="settings-col" style="gap:5px;">
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Backend poll interval (s)</label>
+              <input type="number" class="settings-input" id="cc-backend-poll-s" min="30" max="600" value="60" style="width:70px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Stale threshold (s)</label>
+              <input type="number" class="settings-input" id="cc-stale-threshold-s" min="30" max="3600" value="180" style="width:70px;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Probe model</label>
+              <input type="text" class="settings-input" id="cc-probe-model" value="claude-haiku-4-5-20251001" style="flex:1;min-width:0;">
+            </div>
+          </div>
+          <!-- Auth settings -->
+          <div style="font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;opacity:0.4;margin:10px 0 4px;">Auth</div>
+          <div class="settings-col" style="gap:5px;">
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Auth source</label>
+              <select class="settings-select" id="cc-auth-source" style="flex:1;min-width:0;max-width:220px;">
+                <option value="oauth">Claude Code Pro/Max (OAuth)</option>
+                <option value="apikey">API Key (pay-as-you-go)</option>
+              </select>
+            </div>
+            <div class="settings-row" id="cc-cred-path-row">
+              <label class="settings-label" style="min-width:140px;">Credential path</label>
+              <input type="text" class="settings-input" id="cc-cred-path" style="flex:1;min-width:0;" placeholder="/app/data/cc_credentials.json">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" style="min-width:140px;">Auth status</label>
+              <span id="cc-auth-status" style="font-size:11px;"></span>
+            </div>
+          </div>
+          <div id="cc-cred-setup-hint" style="display:none;margin-top:8px;padding:8px 10px;background:color-mix(in srgb,var(--fg) 5%,transparent);border:1px solid var(--border);border-radius:6px;font-size:10px;line-height:1.5;opacity:0.8;">
+            <strong>Setup:</strong> Copy your Claude Code credentials into the Odysseus data directory on the server:<br>
+            <code style="display:block;margin-top:4px;padding:4px 6px;background:color-mix(in srgb,var(--fg) 8%,transparent);border-radius:4px;font-size:10px;user-select:all;">cp ~/.claude/.credentials.json /home/olusion/odysseus/data/cc_credentials.json</code>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button type="button" id="cc-save-btn" style="font-size:11px;padding:5px 14px;background:color-mix(in srgb,var(--fg) 8%,transparent);border:1px solid var(--border);border-radius:6px;color:var(--fg);cursor:pointer;font-family:inherit;">Save</button>
+            <span id="cc-save-status" style="font-size:10px;opacity:0.5;"></span>
+          </div>
+        </div>
+
         <!-- ═══ THEME TAB ═══ -->
 
         <!-- ═══ MEMORY TAB ═══ -->
@@ -2524,5 +2706,224 @@
 <script type="module" src="/static/js/init.js"></script>
 <script type="module" src="/static/js/a11y.js"></script>
 <script nonce="{{CSP_NONCE}}">if('serviceWorker' in navigator){navigator.serviceWorker.register('/static/sw.js').catch(()=>{});}</script>
+<script nonce="{{CSP_NONCE}}">(function(){
+  'use strict';
+  var CC_CFG_KEY = 'cc-usage-config';
+  var CFG_DEFAULTS = {
+    fe_poll_s: 60,
+    amber_pct: 50, orange_pct: 75, red_pct: 90,
+    mascot_concerned_pct: 50, mascot_sweat_pct: 75, mascot_panic_pct: 90,
+    alert_pct: 0, alert_style: 'badge'
+  };
+
+  function loadCfg() {
+    try { return Object.assign({}, CFG_DEFAULTS, JSON.parse(localStorage.getItem(CC_CFG_KEY) || '{}')); }
+    catch(_) { return Object.assign({}, CFG_DEFAULTS); }
+  }
+  function saveCfg(c) {
+    try { localStorage.setItem(CC_CFG_KEY, JSON.stringify(c)); } catch(_){}
+  }
+
+  var cfg = loadCfg();
+  var _pollTimer = null;
+  var _lastData = null;
+  var _alertFired = {};  // track which higher-pct thresholds we've already alerted
+
+  var fillEl5h   = document.getElementById('cc-5h-fill');
+  var fillElWeek = document.getElementById('cc-week-fill');
+  var pctEl5h    = document.getElementById('cc-5h-pct');
+  var pctElWeek  = document.getElementById('cc-week-pct');
+  var mascot     = document.getElementById('cc-mascot');
+  var staleEl    = document.getElementById('cc-stale');
+  if (!fillEl5h) return;
+
+  function pctClass(v) {
+    if (v === null || v === undefined) return '';
+    var p = v * 100;
+    if (p >= cfg.red_pct)    return 'red';
+    if (p >= cfg.orange_pct) return 'orange';
+    if (p >= cfg.amber_pct)  return 'amber';
+    return '';
+  }
+
+  function mascotState(v) {
+    if (v === null || v === undefined) return '';
+    var p = v * 100;
+    if (p >= cfg.mascot_panic_pct)     return 'state-panic';
+    if (p >= cfg.mascot_sweat_pct)     return 'state-sweat';
+    if (p >= cfg.mascot_concerned_pct) return 'state-concerned';
+    return '';
+  }
+
+  function fmtPct(v) {
+    if (v === null || v === undefined) return '—';
+    return Math.round(v * 100) + '%';
+  }
+
+  function fmtReset(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+    catch(_) { return iso; }
+  }
+
+  function applyFill(fillEl, pctEl, val) {
+    var pct = val !== null && val !== undefined ? Math.min(val * 100, 100) : 0;
+    fillEl.style.width = pct + '%';
+    fillEl.className = 'cc-bar-fill ' + pctClass(val);
+    pctEl.textContent = fmtPct(val);
+  }
+
+  function maybeAlert(higher) {
+    var ap = cfg.alert_pct;
+    if (!ap || ap <= 0) { _alertFired = {}; return; }
+    var pct = higher * 100;
+    if (pct < ap) { _alertFired = {}; return; }
+    var bucket = Math.floor(pct / 10) * 10;
+    if (_alertFired[bucket]) return;
+    _alertFired[bucket] = true;
+    var msg = 'Claude Code usage at ' + Math.round(pct) + '%';
+    if (cfg.alert_style === 'toast' && window.uiModule && window.uiModule.showToast) {
+      window.uiModule.showToast(msg, 6000);
+    } else {
+      var badge = document.getElementById('cc-alert-badge');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.id = 'cc-alert-badge';
+        badge.style.cssText = 'font-size:8px;padding:1px 4px;border-radius:3px;background:var(--color-error);color:#fff;margin-left:4px;';
+        var titleEl = document.querySelector('#cc-usage-meter .cc-usage-title');
+        if (titleEl) titleEl.appendChild(badge);
+      }
+      badge.textContent = Math.round(pct) + '%';
+    }
+  }
+
+  function update(data) {
+    _lastData = data;
+    applyFill(fillEl5h,   pctEl5h,   data.five_hour_pct);
+    applyFill(fillElWeek, pctElWeek, data.weekly_pct);
+    var higher = Math.max(data.five_hour_pct || 0, data.weekly_pct || 0);
+    mascot.className = 'cc-mascot ' + mascotState(higher);
+    var tip5h   = fmtPct(data.five_hour_pct)  + (data.five_hour_resets_at  ? ' · resets ' + fmtReset(data.five_hour_resets_at)  : '');
+    var tipWeek = fmtPct(data.weekly_pct)      + (data.weekly_resets_at     ? ' · resets ' + fmtReset(data.weekly_resets_at)     : '');
+    mascot.title = '5h: ' + tip5h + '\nWeek: ' + tipWeek;
+    document.getElementById('cc-5h-row').title   = '5h usage: ' + tip5h;
+    document.getElementById('cc-week-row').title = 'Weekly usage: ' + tipWeek;
+    if (data.stale) staleEl.classList.add('visible');
+    else staleEl.classList.remove('visible');
+    maybeAlert(higher);
+    // Update auth status badge in settings panel
+    var authStatusEl = _el('cc-auth-status');
+    if (authStatusEl) {
+      var statusMap = {
+        ok:        { text: 'Authenticated', color: 'var(--color-success,#4caf50)' },
+        expired:   { text: 'Token expired',        color: 'var(--color-warning,#ff9800)' },
+        not_found: { text: 'Credentials not found', color: 'var(--color-warning,#ff9800)' },
+        error:     { text: 'Error',                 color: 'var(--color-error,#f44336)' },
+        apikey:    { text: 'API key',               color: '' },
+      };
+      var src = (data.auth_source === 'apikey' && data.auth_status === 'ok') ? 'apikey' : data.auth_status;
+      var info = statusMap[src] || { text: '—', color: '' };
+      authStatusEl.textContent = info.text;
+      authStatusEl.style.color = info.color;
+      var hint = _el('cc-cred-setup-hint');
+      if (hint) hint.style.display = (data.auth_status === 'not_found' && data.auth_source !== 'apikey') ? '' : 'none';
+    }
+  }
+
+  function poll() {
+    fetch('/api/usage/claude-code').then(function(r){ return r.json(); }).then(update).catch(function(){
+      staleEl.classList.add('visible');
+    });
+  }
+
+  function startPolling() {
+    if (_pollTimer) clearInterval(_pollTimer);
+    var ms = Math.max(10, Math.min(300, cfg.fe_poll_s)) * 1000;
+    _pollTimer = setInterval(poll, ms);
+  }
+
+  // Expose a way for the settings panel to apply new config without reload
+  window._ccUsageApplyConfig = function(newCfg) {
+    Object.assign(cfg, newCfg);
+    saveCfg(cfg);
+    startPolling();
+    if (_lastData) update(_lastData);
+  };
+
+  poll();
+  startPolling();
+
+  // ── Settings panel wiring ──
+  function _el(id) { return document.getElementById(id); }
+
+  function populateSettingsForm() {
+    var fePoll   = _el('cc-fe-poll-s');       if (fePoll)   fePoll.value   = cfg.fe_poll_s;
+    var amber    = _el('cc-amber-pct');        if (amber)    amber.value    = cfg.amber_pct;
+    var orange   = _el('cc-orange-pct');       if (orange)   orange.value   = cfg.orange_pct;
+    var red      = _el('cc-red-pct');          if (red)      red.value      = cfg.red_pct;
+    var mc       = _el('cc-mascot-concerned'); if (mc)       mc.value       = cfg.mascot_concerned_pct;
+    var ms       = _el('cc-mascot-sweat');     if (ms)       ms.value       = cfg.mascot_sweat_pct;
+    var mp       = _el('cc-mascot-panic');     if (mp)       mp.value       = cfg.mascot_panic_pct;
+    var ap       = _el('cc-alert-pct');        if (ap)       ap.value       = cfg.alert_pct;
+    var as_      = _el('cc-alert-style');      if (as_)      as_.value      = cfg.alert_style;
+  }
+
+  function loadBackendConfig() {
+    fetch('/api/usage/claude-code/config').then(function(r){ return r.json(); }).then(function(d) {
+      var bp = _el('cc-backend-poll-s');    if (bp) bp.value = d.backend_poll_s;
+      var st = _el('cc-stale-threshold-s'); if (st) st.value = d.stale_threshold_s;
+      var pm = _el('cc-probe-model');       if (pm) pm.value = d.probe_model;
+      var as_ = _el('cc-auth-source');      if (as_) as_.value = d.auth_source || 'oauth';
+      var cp  = _el('cc-cred-path');        if (cp)  cp.value  = d.cred_path   || '';
+    }).catch(function(){});
+  }
+
+  // Wire save button once DOM is ready
+  document.addEventListener('DOMContentLoaded', function() {
+    populateSettingsForm();
+    loadBackendConfig();
+
+    var saveBtn = _el('cc-save-btn');
+    var saveStatus = _el('cc-save-status');
+    if (!saveBtn) return;
+
+    saveBtn.addEventListener('click', function() {
+      // Read frontend config
+      var newCfg = {
+        fe_poll_s:            Math.max(10,  Math.min(300,  parseInt(_el('cc-fe-poll-s').value)     || 60)),
+        amber_pct:            Math.max(1,   Math.min(98,   parseInt(_el('cc-amber-pct').value)      || 50)),
+        orange_pct:           Math.max(1,   Math.min(99,   parseInt(_el('cc-orange-pct').value)     || 75)),
+        red_pct:              Math.max(1,   Math.min(100,  parseInt(_el('cc-red-pct').value)        || 90)),
+        mascot_concerned_pct: Math.max(1,   Math.min(98,   parseInt(_el('cc-mascot-concerned').value) || 50)),
+        mascot_sweat_pct:     Math.max(1,   Math.min(99,   parseInt(_el('cc-mascot-sweat').value)   || 75)),
+        mascot_panic_pct:     Math.max(1,   Math.min(100,  parseInt(_el('cc-mascot-panic').value)   || 90)),
+        alert_pct:            Math.max(0,   Math.min(100,  parseInt(_el('cc-alert-pct').value)      || 0)),
+        alert_style:          (_el('cc-alert-style').value || 'badge'),
+      };
+      window._ccUsageApplyConfig(newCfg);
+
+      // Save backend config
+      var backendBody = {
+        backend_poll_s:   Math.max(30, Math.min(600,  parseInt(_el('cc-backend-poll-s').value)    || 60)),
+        stale_threshold_s:Math.max(30, Math.min(3600, parseInt(_el('cc-stale-threshold-s').value) || 180)),
+        probe_model:      (_el('cc-probe-model').value || 'claude-haiku-4-5-20251001').trim(),
+        auth_source:      (_el('cc-auth-source') ? _el('cc-auth-source').value : 'oauth'),
+        cred_path:        (_el('cc-cred-path')   ? _el('cc-cred-path').value.trim() : ''),
+      };
+      fetch('/api/usage/claude-code/config', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(backendBody),
+        credentials: 'same-origin'
+      }).then(function(r){ return r.json(); }).then(function(d) {
+        saveStatus.textContent = d.ok ? 'Saved.' : 'Error saving backend settings.';
+        setTimeout(function(){ saveStatus.textContent = ''; }, 3000);
+      }).catch(function() {
+        saveStatus.textContent = 'Frontend saved; backend save failed.';
+        setTimeout(function(){ saveStatus.textContent = ''; }, 3000);
+      });
+    });
+  });
+})();</script>
 </body>
 </html>

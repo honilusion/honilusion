@@ -152,7 +152,7 @@ async def do_manage_skills(content: str, owner: Optional[str] = None) -> Dict:
     name = (args.get("name") or args.get("skill_id") or "").strip()
 
     if action in ("list", "index", ""):
-        all_skills = sm.load(owner=owner)
+        all_skills = [s for s in sm.load(owner=owner) if s.get("enabled", True)]
         if not all_skills:
             return {"results": "No skills yet. Create one with action='add'."}
         published = [s for s in all_skills if s.get("status") == "published"]
@@ -171,6 +171,10 @@ async def do_manage_skills(content: str, owner: Optional[str] = None) -> Dict:
     if action == "view":
         if not name:
             return {"error": "name is required for view", "exit_code": 1}
+        all_sk = sm.load(owner=owner)
+        sk_meta = next((s for s in all_sk if s.get("name") == name), None)
+        if sk_meta and not sk_meta.get("enabled", True):
+            return {"error": f"Skill {name!r} is disabled", "exit_code": 1}
         md = sm.read_skill_md(name, owner=owner)
         if md is None:
             return {"error": f"Skill {name!r} not found", "exit_code": 1}
@@ -318,7 +322,8 @@ async def do_manage_skills(content: str, owner: Optional[str] = None) -> Dict:
         query = (args.get("query") or "").strip()
         if not query:
             return {"error": "query is required for search", "exit_code": 1}
-        results = sm.get_relevant_skills(query, sm.load(owner=owner), max_items=5)
+        _pool = [s for s in sm.load(owner=owner) if s.get("enabled", True)]
+        results = sm.get_relevant_skills(query, _pool, max_items=5)
         if not results:
             return {"results": "No matching skills found."}
         lines = []

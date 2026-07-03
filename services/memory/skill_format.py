@@ -337,6 +337,7 @@ class Skill:
     pitfalls: List[str] = field(default_factory=list)
     verification: List[str] = field(default_factory=list)
     body_extra: str = ""
+    enabled: bool = True
     # Sidecar (not persisted in SKILL.md)
     uses: int = 0
     last_used: Optional[int] = None
@@ -364,6 +365,8 @@ class Skill:
         if self.teacher_model: fm["teacher_model"] = self.teacher_model
         if self.owner:         fm["owner"] = self.owner
         fm["created"] = self.created or _now_iso()
+        if not self.enabled:
+            fm["enabled"] = False
         return fm
 
     def to_dict(self) -> Dict[str, Any]:
@@ -388,6 +391,7 @@ class Skill:
             "pitfalls": list(self.pitfalls),
             "verification": list(self.verification),
             "body_extra": self.body_extra,
+            "enabled": self.enabled,
             "uses": int(self.uses or 0),
             "last_used": self.last_used,
             "path": self.path,
@@ -425,6 +429,7 @@ class Skill:
             pitfalls=list(sections["pitfalls"]),
             verification=list(sections["verification"]),
             body_extra=sections["body_extra"],
+            enabled=bool(fm.get("enabled", True)),
             path=path,
         )
 

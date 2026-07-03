@@ -703,11 +703,35 @@ function renderSkillsList() {
         ${_necessityPill(sk)}
         ${_duplicatePriorityPill(sk)}
         <span class="skill-stats">${_auditMarks(sk)}<span class="skill-conf" style="color:${confColor};">${conf}%</span> · ${uses}u</span>
+        <label class="skill-enabled-label" title="${sk.enabled !== false ? 'Enabled — click to disable' : 'Disabled — click to enable'}" style="display:flex;align-items:center;gap:3px;cursor:pointer;margin-left:4px;" onclick="event.stopPropagation()">
+          <input type="checkbox" class="skill-enabled-cb" data-name="${esc(name)}" ${sk.enabled !== false ? 'checked' : ''} style="cursor:pointer;width:14px;height:14px;">
+        </label>
         <span class="skill-chevron-up" title="Collapse"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></span>
         <button class="skill-kebab-btn" title="Actions" aria-label="Actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
       </div>
     `;
     card.appendChild(header);
+
+    // Enabled toggle — PATCH /api/skills/{name}/enabled
+    header.querySelector('.skill-enabled-cb').addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const enabled = e.target.checked;
+      card.classList.toggle('skill-disabled-card', !enabled);
+      try {
+        await fetch(`/api/skills/${encodeURIComponent(name)}/enabled`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+      } catch (err) {
+        console.error('Failed to toggle skill enabled:', err);
+        e.target.checked = !enabled; // revert on error
+        card.classList.toggle('skill-disabled-card', enabled);
+      }
+    });
+
+    // Apply disabled styling on initial render
+    if (sk.enabled === false) card.classList.add('skill-disabled-card');
 
     // Kebab dropdown (collapsed-bar quick actions: same set + icons as the
     // expanded footer). Clicking the kebab opens it; it doesn't expand.

@@ -467,6 +467,9 @@ class SkillsManager:
                 if k in updates:
                     setattr(sk, k, list(updates[k] or []))
 
+            if "enabled" in updates:
+                sk.enabled = bool(updates["enabled"])
+
             # Old-schema field aliases
             if "title" in updates and "description" not in updates:
                 sk.description = updates["title"]
@@ -627,6 +630,9 @@ class SkillsManager:
             fb = s.get("fallback_for_toolsets") or []
             if fb and active_toolsets and any(t in active_toolsets for t in fb):
                 continue
+            # Skip disabled skills
+            if not s.get("enabled", True):
+                continue
             out.append({
                 "name": s["name"],
                 "description": s.get("description") or s.get("title", ""),
@@ -661,6 +667,7 @@ class SkillsManager:
         # entries with a 🎓 badge so users can demote / delete bad
         # ones when they spot them.
         skills = [s for s in skills if s.get("status") in ("published", "draft")]
+        skills = [s for s in skills if s.get("enabled", True)]
         # Confidence gate (used by prompt-injection, NOT by search): a DRAFT
         # skill must clear the bar to be injected. Published skills are already
         # vetted, so they always qualify. Missing confidence = treat as 1.0

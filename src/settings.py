@@ -157,9 +157,14 @@ DEFAULT_SETTINGS = {
     # qualify. Keeps low-confidence auto-skills out of context until they're
     # vetted/published. 0 disables the gate.
     "skill_autosave_min_confidence": 0.85,
-    # Max relevant skills injected into the prompt for one request. The skills
-    # library can grow beyond this; cleanup/retirement is an explicit review flow.
-    "skill_max_injected": 3,
+    # Max skills in the Level-0 index block injected into the agent prompt.
+    "skill_max_injected": 50,
+    # How skills are injected: "index" (one-line catalogue, fetch on demand) or
+    # "legacy" (inject full matched skill content directly).
+    "skill_injection_mode": "index",
+    # Pre-pass mode for skill matching: "local_only" (run a mini LLM call to
+    # identify relevant skills when using a local model) or "off".
+    "skill_prepass": "local_only",
     # Reminders
     "reminder_channel": "browser",   # "browser" | "email" | "ntfy" | "webhook"
     "reminder_llm_synthesis": False,
