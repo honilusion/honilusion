@@ -557,9 +557,10 @@ export function setActivePreset(presetId) {
 /**
  * Open custom preset modal
  */
-export function openCustomPresetModal() {
+export async function openCustomPresetModal() {
   const modal = document.getElementById('custom-preset-modal');
   if (!modal) return;
+  await loadUserTemplates();
 
   const savedConfig = presets.custom || {
     character_name: "",
