@@ -383,7 +383,18 @@ def project_changelog(name: str, limit: int = 10) -> str:
         db.close()
 
 
+_preset_manager = None
+
+
+def init_preset_manager(pm) -> None:
+    """Inject the app-level PresetManager singleton so MCP tools share it."""
+    global _preset_manager
+    _preset_manager = pm
+
+
 def _get_preset_manager():
+    if _preset_manager is not None:
+        return _preset_manager
     from src.preset_manager import PresetManager
     from src.constants import DATA_DIR
     return PresetManager(DATA_DIR)

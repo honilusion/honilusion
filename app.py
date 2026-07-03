@@ -806,9 +806,10 @@ app.include_router(setup_hub_routes())
 from routes.usage_routes import setup_usage_routes
 app.include_router(setup_usage_routes())
 
-from routes.hub.hub_mcp import get_hub_mcp_app as _get_hub_mcp_app, _hub_mcp as _hub_mcp_server
+from routes.hub.hub_mcp import get_hub_mcp_app as _get_hub_mcp_app, _hub_mcp as _hub_mcp_server, init_preset_manager as _init_hub_preset_manager
 _hub_mcp_asgi = _get_hub_mcp_app()
 app.mount("/api/hub/mcp", _hub_mcp_asgi)
+_init_hub_preset_manager(preset_manager)
 
 @app.get("/hub", include_in_schema=False)
 @app.get("/hub/", include_in_schema=False)
