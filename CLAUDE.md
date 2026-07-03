@@ -392,6 +392,16 @@ Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (betwe
 
 ---
 
+## Hub MCP Singleton Pattern
+
+**Rule:** MCP tool functions in `routes/hub/hub_mcp.py` must use the app-level `PresetManager` singleton — never instantiate their own.
+
+`_get_preset_manager()` had been creating a new `PresetManager(DATA_DIR)` per call. Saves went to disk but bypassed the in-memory singleton at `app.state.preset_manager`, so `GET /api/presets/templates` returned stale data (REST and MCP paths diverged). Fixed by adding `init_preset_manager(pm)` in `hub_mcp.py` and calling it from `app.py` after mounting the MCP sub-app. `_get_preset_manager()` now returns the injected singleton; new-instance fallback exists only for pre-init safety.
+
+**Applies to any future shared state:** if a hub_mcp tool needs to read/write app state (memory manager, skills manager, etc.), inject via a similar `init_*` function — do not import the FastAPI `app` object into `hub_mcp.py` (circular import risk).
+
+---
+
 ## Planned Features (honilusion-main)
 
 - [x] Persistent API tokens (self-service, Settings → Account)
