@@ -358,6 +358,80 @@ dispatch, keyword checks. All passing.
 
 ---
 
+## MCP Tool Index + On-Demand Schema Fetch (2026-07-06)
+
+### Problem
+
+Local models discover MCP tools via `_MCP_KEYWORDS` keyword-gating in
+`src/agent_loop.py`. A message with no matching keyword (e.g. "check the
+status of my batch job") causes MCP schemas to not be injected — the model
+never learns the tools exist. As more MCP servers are added, keyword coverage
+becomes untenable.
+
+### Solution
+
+Two additive mechanisms (do NOT remove or weaken keyword gating, hub_retrieve_full
+unconditional injection, or lookup_upload keyword gating):
+
+**1. Compact server index in system prompt** (`_build_mcp_server_index()` in
+`src/agent_loop.py`)
+- Always injected for ALL models via `_build_base_prompt()`
+- One line per connected server: server_id, tool count, one-line purpose
+- Example output:
+  ```
+  ## Available MCP servers
+  Use `get_tool_schema` with a server_id below to get that server's full tool schemas.
+  - `hub` (27 tools): inbox messaging, projects, canon store, personas, upload lookup, compressed output retrieval
+  - `fileprep` (6 tools): PDF/DOCX/image preprocessing to Markdown
+  ```
+- Derived from live `mcp_mgr.get_all_statuses()` — no hand-maintained list
+- Known server purposes in `_MCP_SERVER_PURPOSES` dict (update when adding builtins)
+- DB-backed / user-added servers fall back to their configured display name
+
+**2. `get_tool_schema(server_name)` meta-tool** (`mcp__hub__get_tool_schema`)
+- Tool entry in `mcp_servers/hub_server.py` list_tools() only (for schema generation)
+- Actual dispatch intercepted in `src/tool_execution.py` BEFORE `mcp.call_tool()`
+  via `_handle_get_tool_schema(server_name, mcp)` — hub subprocess can't access
+  the live MCP manager singleton from a child process
+- Returns JSON array of OpenAI-format schemas for every tool on the named server
+- Loud error on unknown server name: `"Error: unknown server 'X'. Valid server names: hub, fileprep"`
+- Schemas injected into subsequent rounds via `_ensure_fetched_server_schemas()` so the
+  model can make native calls immediately after the get_tool_schema round-trip
+- Unconditionally available (same `_ensure_hub_retrieve_full_schema` pattern):
+  `_ensure_get_tool_schema_schema()` called in the local-model `else:` branch
+
+### Architecture: how `_fetched_servers` works
+
+`_fetched_servers: set[str]` is initialized before the per-turn round loop. When
+the model calls `mcp__hub__get_tool_schema`, the tool dispatch in agent_loop detects
+the call (by checking `block.tool_type == _GET_TOOL_SCHEMA_NAME`) and adds the
+server_name to `_fetched_servers`. On the NEXT round, `_ensure_fetched_server_schemas()`
+injects all schemas for those servers unconditionally (with dedup against already-present
+schemas), so the model can call them natively.
+
+### Key constants and functions
+
+| Symbol | Location | Purpose |
+|--------|----------|---------|
+| `_GET_TOOL_SCHEMA_NAME` | `agent_loop.py` | `"mcp__hub__get_tool_schema"` constant |
+| `_MCP_SERVER_PURPOSES` | `agent_loop.py` | Dict of known server → one-line purpose |
+| `_build_mcp_server_index(mcp_mgr)` | `agent_loop.py` | Generates compact index block |
+| `_ensure_get_tool_schema_schema()` | `agent_loop.py` | Unconditional schema injection |
+| `_ensure_fetched_server_schemas()` | `agent_loop.py` | Round-N+1 schema injection |
+| `_handle_get_tool_schema()` | `tool_execution.py` | In-process dispatch handler |
+
+### Tests
+
+`tests/test_mcp_tool_index.py` — 32 tests covering:
+- `_build_mcp_server_index()`: header, per-server entries, tool count, purpose text, fallback
+- `_ensure_get_tool_schema_schema()`: inject, dedup, absent, disabled
+- `_ensure_fetched_server_schemas()`: inject for fetched, dedup, disabled, multi-server
+- `_handle_get_tool_schema()`: happy path, unknown-server loud error, valid names, empty name, JSON validity
+- hub_server Tool entry exists, constant matches
+- Keyword fast-path regression: `_MCP_KEYWORDS` intact, `_HUB_RETRIEVE_FULL_SCHEMA_NAME` unchanged
+
+---
+
 ## Agent Hub (Phase 1)
 
 Added in commit "feat: Agent Hub Phase 1 — inbox and projects"

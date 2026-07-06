@@ -689,6 +689,60 @@ _MCP_KEYWORDS = frozenset(["mcp", "browse", "browser", "website", "calendar", "e
 # marker into ANY tool result, native or not — content-based gating
 # (always_inject DB flag, then _MCP_KEYWORDS) could not guarantee that.
 _HUB_RETRIEVE_FULL_SCHEMA_NAME = "mcp__hub__hub_retrieve_full"
+# get_tool_schema is the meta-tool for on-demand schema fetch — see MCP Tool
+# Index section in CLAUDE.md. Same unconditional-inclusion treatment as
+# hub_retrieve_full: it exists specifically to be reachable when keyword-
+# gating has not fired, so it cannot itself depend on keyword-gating.
+_GET_TOOL_SCHEMA_NAME = "mcp__hub__get_tool_schema"
+
+# One-line purposes for known MCP servers — drives the compact index block
+# injected into the system prompt via _build_mcp_server_index().
+# Keys match the server_id used in mcp_manager._connections.
+# DB-backed user-added servers fall back to their display name automatically
+# (no entry needed here for those). Update this dict when a new builtin is added.
+_MCP_SERVER_PURPOSES = {
+    "hub": (
+        "inbox messaging, projects, canon store, personas, "
+        "upload lookup, compressed output retrieval"
+    ),
+    "memory": "list, add, edit, delete, and search the user's memories",
+    "rag": "manage document index for ChromaDB retrieval-augmented search",
+    "email": "list, read, send, search, reply to, and archive emails",
+    "image_gen": "generate images using DALL-E or other image-capable models",
+    "builtin_browser": "browse websites, take screenshots, navigate and interact with pages",
+}
+
+
+def _build_mcp_server_index(mcp_mgr) -> str:
+    """Return a compact one-line-per-server index for the system prompt.
+
+    Derived from the live MCP manager state — no separate hand-maintained list.
+    Builtin servers use _MCP_SERVER_PURPOSES; DB-backed servers fall back to
+    their configured display name. Returns "" when mcp_mgr is None or no servers
+    are connected.
+    """
+    if not mcp_mgr:
+        return ""
+    try:
+        statuses = mcp_mgr.get_all_statuses()
+    except Exception:
+        return ""
+    lines = []
+    for server_id, conn in statuses.items():
+        if conn.get("status") not in ("connected", "ready"):
+            continue
+        tool_count = len(mcp_mgr._tools.get(server_id, []))
+        display_name = conn.get("name") or server_id
+        purpose = _MCP_SERVER_PURPOSES.get(server_id) or display_name
+        lines.append(f"- `{server_id}` ({tool_count} tools): {purpose}")
+    if not lines:
+        return ""
+    header = (
+        "\n\n## Available MCP servers\n"
+        "Use `get_tool_schema` with a server_id below to get that server's full "
+        "tool schemas when you need to call one of its tools.\n"
+    )
+    return header + "\n".join(lines)
 
 
 def _ensure_hub_retrieve_full_schema(all_tool_schemas: list, mcp_schemas: list, disabled_tools) -> list:
@@ -714,6 +768,59 @@ def _ensure_hub_retrieve_full_schema(all_tool_schemas: list, mcp_schemas: list, 
     if hrf_schema is None:
         return all_tool_schemas
     return all_tool_schemas + [hrf_schema]
+
+
+def _ensure_get_tool_schema_schema(all_tool_schemas: list, mcp_schemas: list, disabled_tools) -> list:
+    """get_tool_schema must be visible on every local-model turn, unconditionally.
+
+    Same treatment as hub_retrieve_full: it exists to be reachable when
+    keyword-gating has not fired, so it cannot itself depend on keyword-gating.
+    Derives schema from mcp_schemas so it stays in sync with hub_server.py.
+    No-ops if the tool isn't in mcp_schemas or is explicitly disabled.
+    """
+    if disabled_tools and _GET_TOOL_SCHEMA_NAME in disabled_tools:
+        return all_tool_schemas
+    existing_names = {s.get("function", {}).get("name") for s in all_tool_schemas}
+    if _GET_TOOL_SCHEMA_NAME in existing_names:
+        return all_tool_schemas
+    schema = next(
+        (s for s in mcp_schemas
+         if s.get("function", {}).get("name") == _GET_TOOL_SCHEMA_NAME),
+        None,
+    )
+    if schema is None:
+        return all_tool_schemas
+    return all_tool_schemas + [schema]
+
+
+def _ensure_fetched_server_schemas(
+    all_tool_schemas: list,
+    mcp_schemas: list,
+    fetched_servers: set,
+    disabled_tools,
+) -> list:
+    """Include schemas for servers that get_tool_schema was called for this turn.
+
+    When the model calls get_tool_schema("hub") in round N, hub's schemas are
+    added to all_tool_schemas for round N+1 so the model can make native calls.
+    Dedupes by function name to avoid double-injection if keyword match also fired.
+    """
+    if not fetched_servers:
+        return all_tool_schemas
+    existing_names = {s.get("function", {}).get("name") for s in all_tool_schemas}
+    to_add = []
+    for s in mcp_schemas:
+        fn_name = s.get("function", {}).get("name") or ""
+        if fn_name in existing_names:
+            continue
+        if disabled_tools and fn_name in disabled_tools:
+            continue
+        # fn_name format: mcp__{server_id}__{tool_name}
+        parts = fn_name.split("__", 2)
+        if len(parts) >= 2 and parts[1] in fetched_servers:
+            to_add.append(s)
+            existing_names.add(fn_name)
+    return all_tool_schemas + to_add
 
 
 _ADMIN_SCHEMA_NAMES = frozenset([
@@ -1652,11 +1759,19 @@ def _build_base_prompt(
         if integ_prompt:
             agent_prompt += "\n\n" + integ_prompt
 
-    # Inject MCP tool descriptions
+    # Inject MCP tool descriptions (full per-tool listing for non-builtin servers)
     if mcp_mgr:
         mcp_desc = mcp_mgr.get_tool_descriptions_for_prompt(mcp_disabled_map or {})
         if mcp_desc:
             agent_prompt += mcp_desc
+
+    # Inject compact MCP server index — one line per server with purpose and
+    # tool count. Always present so the model knows what servers exist and can
+    # call get_tool_schema when keyword-gating hasn't fired full schemas.
+    if mcp_mgr:
+        server_index = _build_mcp_server_index(mcp_mgr)
+        if server_index:
+            agent_prompt += server_index
 
     return agent_prompt, skill_index_block
 
@@ -2655,6 +2770,10 @@ async def stream_agent_loop(
     _call_freq: collections.Counter = collections.Counter()
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
+    # Servers whose schemas were fetched via get_tool_schema this turn. Schemas
+    # for these servers are unconditionally included in subsequent rounds so the
+    # model can make native calls after a get_tool_schema round-trip.
+    _fetched_servers: set = set()
     # Supervisor: how many times we've nudged the model after it announced
     # an action without emitting the tool call. Capped to prevent a model
     # that *can't* call the tool from looping forever.
@@ -2768,8 +2887,13 @@ async def stream_agent_loop(
                 ]
             else:
                 all_tool_schemas = []
-            # Unconditional exception: see _HUB_RETRIEVE_FULL_SCHEMA_NAME above.
+            # Unconditional exceptions: hub_retrieve_full (see _HUB_RETRIEVE_FULL_SCHEMA_NAME)
+            # and get_tool_schema (see _GET_TOOL_SCHEMA_NAME). Both must be reachable
+            # before keyword-gating fires — see CLAUDE.md "MCP Tool Index" section.
             all_tool_schemas = _ensure_hub_retrieve_full_schema(all_tool_schemas, mcp_schemas, disabled_tools)
+            all_tool_schemas = _ensure_get_tool_schema_schema(all_tool_schemas, mcp_schemas, disabled_tools)
+            # Schemas for servers the model fetched via get_tool_schema earlier this turn.
+            all_tool_schemas = _ensure_fetched_server_schemas(all_tool_schemas, mcp_schemas, _fetched_servers, disabled_tools)
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
@@ -3616,6 +3740,15 @@ async def stream_agent_loop(
             formatted = format_tool_result(desc, result, is_api_model=_is_api_model, session_id=session_id)
             tool_results.append(formatted)
             tool_result_texts.append(formatted)
+
+            # Track get_tool_schema calls so the next round injects those schemas.
+            if block.tool_type == _GET_TOOL_SCHEMA_NAME:
+                try:
+                    _fetched_server = json.loads(block.content or "{}").get("server_name", "").strip()
+                    if _fetched_server:
+                        _fetched_servers.add(_fetched_server)
+                except Exception:
+                    pass
 
         # If budget was hit, stop the loop
         if budget_hit:

@@ -343,6 +343,44 @@ def _parse_qualified_mcp_args(tool: str, content: str) -> tuple[Dict, Optional[s
     return parsed, None
 
 
+def _handle_get_tool_schema(server_name: str, mcp) -> Dict:
+    """Return OpenAI-format tool schemas for a named MCP server.
+
+    Runs in-process (not via hub subprocess) so it can access the live MCP
+    manager singleton. Returns {"content": "<json array>", "exit_code": 0} on
+    success, {"error": "...", "exit_code": 1} on unknown server name.
+    """
+    server_name = (server_name or "").strip()
+    if not server_name:
+        return {"error": "Error: server_name is required", "exit_code": 1}
+    try:
+        all_schemas = mcp.get_all_openai_schemas()
+    except Exception as exc:
+        return {"error": f"Error: could not retrieve schemas: {exc}", "exit_code": 1}
+    # mcp__<server_id>__<tool_name> — filter by server_id
+    matched = [
+        s for s in all_schemas
+        if (s.get("function", {}).get("name") or "").split("__", 2)[1:2] == [server_name]
+    ]
+    if not matched:
+        # Build valid server list from available schemas
+        seen = set()
+        valid = []
+        for s in all_schemas:
+            parts = (s.get("function", {}).get("name") or "").split("__", 2)
+            if len(parts) >= 2 and parts[1] not in seen:
+                seen.add(parts[1])
+                valid.append(parts[1])
+        return {
+            "error": (
+                f"Error: unknown server '{server_name}'. "
+                f"Valid server names: {', '.join(sorted(valid)) or '(none connected)'}"
+            ),
+            "exit_code": 1,
+        }
+    return {"content": json.dumps(matched, indent=2), "exit_code": 0}
+
+
 def _parse_generate_image(content: str) -> Dict:
     lines = content.strip().split("\n")
     args = {"prompt": lines[0].strip() if lines else ""}
@@ -894,6 +932,10 @@ async def _execute_tool_block_impl(
             args, parse_error = _parse_qualified_mcp_args(tool, content)
             if parse_error:
                 result = {"error": parse_error, "exit_code": 1}
+            elif tool == "mcp__hub__get_tool_schema":
+                # Intercepted in-process: hub_server.py runs as a subprocess
+                # and cannot access the live MCP manager singleton.
+                result = _handle_get_tool_schema(args.get("server_name", ""), mcp)
             else:
                 if tool.startswith("mcp__email__") and owner:
                     args = dict(args)

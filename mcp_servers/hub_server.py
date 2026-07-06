@@ -353,6 +353,29 @@ async def list_tools() -> list[Tool]:
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="get_tool_schema",
+            description=(
+                "Fetch the full OpenAI-format tool schemas for a named MCP server so you can "
+                "make native calls to its tools. Use this when you need to call a server whose "
+                "schemas were not injected at turn start (keyword-gating didn't fire). "
+                "Returns a JSON array of tool schemas. The schemas are also injected "
+                "automatically for subsequent rounds in the same turn."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "server_name": {
+                        "type": "string",
+                        "description": (
+                            "MCP server_id to fetch schemas for (e.g. 'hub', 'fileprep'). "
+                            "Use the Available MCP Servers index in the system prompt for valid IDs."
+                        ),
+                    },
+                },
+                "required": ["server_name"],
+            },
+        ),
     ]
 
 
@@ -1043,6 +1066,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "lookup_upload":
         return _text(_lookup_upload(arguments.get("query", "")))
+    elif name == "get_tool_schema":
+        # Actual dispatch is intercepted in src/tool_execution.py before it
+        # reaches the hub subprocess. This branch only fires if called
+        # directly against this server (e.g. from tests). It can't access the
+        # live MCP manager singleton from a subprocess context — caller should
+        # use the in-process intercept instead.
+        return _text(
+            "Error: get_tool_schema must be dispatched via the main process "
+            "(tool_execution.py intercept). Subprocess context has no access "
+            "to the live MCP manager."
+        )
 
     return _text(f"Unknown tool: {name}")
 
