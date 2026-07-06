@@ -553,6 +553,102 @@ None of these were implemented — each touches `agent_loop.py`'s matching
 logic beyond "add a keyword," which needs a decision before Session 2 can
 assume this path actually works.
 
+### Session 1.5b: discoverability — RESOLVED (unconditional inclusion)
+
+**This closes out the discoverability saga. Please read this section fully
+before re-litigating it in a future session — both earlier approaches were
+tried in good faith and both had real, specific reasons they didn't work.**
+
+**The decision:** stop making `hub_retrieve_full`'s visibility conditional on
+message content at all. It's one small, cheap tool schema (~100 tokens) that
+every local model needs available at all times once the Session 2 compressor
+ships `tc-` markers into tool results — so it's now a **hardcoded,
+unconditional inclusion for local (non-API) models**, independent of
+`_MCP_KEYWORDS`, `_effective_kw`, and the DB `always_inject` config. API
+models were never the problem (they get all MCP schemas unconditionally
+already, per Session 1).
+
+**Why the first two approaches didn't work (do not retry these):**
+1. **Always-inject DB flag (Session 1's original plan):** the built-in `hub`
+   server has no `mcp_servers` DB row, and faking one to flip its
+   `always_inject` bit would make `mcp_manager.connect_all_enabled()` connect
+   `server_id="hub"` a second time after `register_builtin_servers()` already
+   claimed it — no idempotency guard, so it'd spawn a duplicate stdio
+   subprocess and clobber the first one's connection state.
+2. **Keyword-gating (Session 1.5's `"tc-"` in `_MCP_KEYWORDS`):** works only
+   when a tool result is wrapped as a `role="user"` message — i.e. only for
+   local models on the *non-native* (text/fenced) tool-calling branch.
+   `_extract_last_user_message()` never inspects `role="tool"` messages, and
+   the actual local model configured on this deployment (LM Studio) uses
+   **native** tool-calling — confirmed live, not assumed (see Session 1.5's
+   write-up above). So the one keyword-driven fix available did not cover
+   the one model actually in use.
+
+**Implementation** (`src/agent_loop.py`):
+- `_HUB_RETRIEVE_FULL_SCHEMA_NAME = "mcp__hub__hub_retrieve_full"` — module
+  constant (~line 684).
+- `_ensure_hub_retrieve_full_schema(all_tool_schemas, mcp_schemas,
+  disabled_tools)` — pure helper (~line 693). Derives the schema by name
+  lookup from the already-computed `mcp_schemas` list (not a hand-duplicated
+  literal), so it can never drift from `hub_server.py`'s real tool
+  definition and automatically inherits any disabled-tool filtering already
+  applied upstream in `mcp_mgr.get_all_openai_schemas()`. Dedupes by function
+  name (no-ops if already present via keyword match or a future DB
+  always-inject hit). No-ops entirely if `hub_retrieve_full` isn't in
+  `mcp_schemas` at all (MCP disabled, hub server down) or is explicitly in
+  `disabled_tools` (an admin's deliberate disable is respected, not
+  bypassed).
+- Call site: the tail of the local-model (`else:`) branch of the per-round
+  schema-assembly `if _force_answer: … elif _is_api_model: … else: …` block
+  (~line 2771), right before `all_tool_schemas` is used. **Deliberately not**
+  applied when `_force_answer` is true — that's the unrelated loop-breaker
+  safety valve that forces a zero-tool round to stop a runaway repeat-call
+  loop; overriding it here would reintroduce exactly the loop it exists to
+  prevent. Placing the call inside the `else:` branch achieves this carve-out
+  for free (that branch only runs when neither `_force_answer` nor
+  `_is_api_model` is true).
+- `"tc-"` stays in `_MCP_KEYWORDS` — harmless, and may still help other
+  keyword-driven matching in the text-model branch, but is no longer
+  load-bearing for `hub_retrieve_full` specifically.
+
+**Tests** (`tests/test_agent_loop.py`):
+- `TestEnsureHubRetrieveFullSchema` — unit tests on the helper: appends when
+  absent, dedupes when already present, no-ops when absent from
+  `mcp_schemas`, respects `disabled_tools`, preserves other schemas.
+- `TestHubRetrieveFullUnconditionalInclusion` — replicates the real
+  local-model schema-assembly branch end-to-end and proves all three
+  required conditions: (a) zero keyword match at all, (b) a native
+  tool-calling round with no marker anywhere, (c) a `tc-` marker embedded in
+  a `role="tool"` message (the exact Session 1.5 failure case) — schema is
+  present in all three. All passing; full `hub`/`mcp`/`agent_loop` suite
+  (209 tests) green.
+
+**Live-verified twice** (2026-07-06), both against the real deployed
+container and the actual LM Studio endpoint:
+1. Built `hub_retrieve_full`'s schema directly from the live container's
+   `hub_server.list_tools()` output (not hand-typed) and confirmed via the
+   real `_ensure_hub_retrieve_full_schema` that it's included even when
+   `all_tool_schemas` starts empty (zero keyword match, the exact scenario
+   that failed in Session 1.5).
+2. Full round-trip against `qwen/qwen3.5-9b` (native tool-calling): user
+   message `"Can you check the status of my batch job for me?"` (zero
+   `_MCP_KEYWORDS` hits) → assistant calls an unrelated tool → the tool
+   result (not the user's message) contains `"ref_id tc-3fffd39d"` → model
+   correctly reasoned through it and emitted a native `tool_call` for
+   `mcp__hub__hub_retrieve_full` with the right ref → executed via the real
+   `hub_server.call_tool` dispatch → real payload returned → fed back → model
+   correctly reported the retrieved content. (The smaller
+   `gemma-4-e2b-it-...` model failed to pick up the ref from the tool result
+   twice in a row — a model capability/prompt-following limitation, not a
+   code issue; the schema-presence fix is proven independently at the code
+   level regardless of which model is asked to use it.) Test cache rows
+   deleted after each verification.
+
+**Status: hub_retrieve_full discoverability is RESOLVED. Session 2 (the
+compressor) is unblocked** — it can assume the schema is always visible to
+local models and does not need to reason about `used_native`, tool-result
+wrapping, or keyword content at all.
+
 ---
 
 ## Planned Features (honilusion-main)

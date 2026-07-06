@@ -40,7 +40,9 @@ try:
         _compute_final_metrics,
         _append_tool_results,
         _extract_last_user_message,
+        _ensure_hub_retrieve_full_schema,
         _MCP_KEYWORDS,
+        _HUB_RETRIEVE_FULL_SCHEMA_NAME,
     )
     _IMPORTED_AGENT_LOOP = sys.modules.get("src.agent_loop")
 finally:
@@ -356,15 +358,19 @@ class TestAppendToolResultsNativeContent:
 
 
 class TestHubRetrieveFullDiscoverability:
-    """Token Compression Session 1.5: a compressor (Session 2) leaves a
-    tc-{8 hex} marker in place of a large tool result. Local models only get
-    hub_retrieve_full's schema injected when _wants_mcp is True, which is
-    computed from _extract_last_user_message(messages) — the single most
-    recent role=="user" message. Whether that function ever sees the marker
-    depends on used_native: non-native tool results are wrapped into a
-    role="user" untrusted_context_message; native tool_calls results are
-    role="tool" and are never scanned. See agent_loop.py _MCP_KEYWORDS
-    comment and CLAUDE.md for the full writeup."""
+    """Token Compression Session 1.5 (superseded for hub_retrieve_full itself
+    by Session 1.5b's unconditional inclusion — see TestEnsureHubRetrieveFull
+    Schema and TestHubRetrieveFullUnconditionalInclusion below; kept because
+    _wants_mcp/_extract_last_user_message's behavior documented here is still
+    true and still gates every OTHER MCP tool).
+
+    A compressor (Session 2) leaves a tc-{8 hex} marker in place of a large
+    tool result. _wants_mcp is computed from _extract_last_user_message(messages)
+    — the single most recent role=="user" message. Whether that function ever
+    sees the marker depends on used_native: non-native tool results are
+    wrapped into a role="user" untrusted_context_message; native tool_calls
+    results are role="tool" and are never scanned. See agent_loop.py
+    _MCP_KEYWORDS comment and CLAUDE.md for the full writeup."""
 
     def _wants_mcp(self, messages) -> bool:
         last_user = _extract_last_user_message(messages)
@@ -409,6 +415,128 @@ class TestHubRetrieveFullDiscoverability:
         # directly it's the literal last user message and always works.
         messages = [{"role": "user", "content": "please retrieve tc-a3f81c2d"}]
         assert self._wants_mcp(messages) is True
+
+
+_HRF_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": _HUB_RETRIEVE_FULL_SCHEMA_NAME,
+        "description": "[MCP:Built-in: Agent Hub] Retrieve a full tool output previously parked in the Agent Hub cache by ref_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {"ref_id": {"type": "string"}},
+            "required": ["ref_id"],
+        },
+    },
+}
+_OTHER_MCP_SCHEMA = {
+    "type": "function",
+    "function": {"name": "mcp__hub__project_list", "description": "...", "parameters": {}},
+}
+
+
+class TestEnsureHubRetrieveFullSchema:
+    """Token Compression Session 1.5b: hub_retrieve_full's schema is a
+    hardcoded, unconditional exception for local models — independent of
+    _MCP_KEYWORDS, _effective_kw, and always_inject. Unit tests on the
+    helper itself; TestHubRetrieveFullUnconditionalInclusion below proves it
+    survives the full local-model schema-assembly branch."""
+
+    def test_appends_when_absent(self):
+        result = _ensure_hub_retrieve_full_schema([], [_HRF_SCHEMA], set())
+        names = [s["function"]["name"] for s in result]
+        assert _HUB_RETRIEVE_FULL_SCHEMA_NAME in names
+
+    def test_no_duplicate_when_already_present(self):
+        # Guards against double-injection if a future DB always-inject config
+        # or keyword match already put it in all_tool_schemas.
+        result = _ensure_hub_retrieve_full_schema([_HRF_SCHEMA], [_HRF_SCHEMA], set())
+        names = [s["function"]["name"] for s in result]
+        assert names.count(_HUB_RETRIEVE_FULL_SCHEMA_NAME) == 1
+
+    def test_noop_when_absent_from_mcp_schemas(self):
+        # MCP disabled entirely / hub server not connected -- nothing to pull
+        # the schema from, so no-op rather than fabricate one.
+        result = _ensure_hub_retrieve_full_schema([], [], set())
+        assert result == []
+
+    def test_respects_explicit_disabled_tools(self):
+        # An admin explicitly disabling the tool is a different, deliberate
+        # mechanism this unconditional exception must not bypass.
+        result = _ensure_hub_retrieve_full_schema(
+            [], [_HRF_SCHEMA], {_HUB_RETRIEVE_FULL_SCHEMA_NAME}
+        )
+        names = [s["function"]["name"] for s in result]
+        assert _HUB_RETRIEVE_FULL_SCHEMA_NAME not in names
+
+    def test_preserves_other_schemas(self):
+        result = _ensure_hub_retrieve_full_schema(
+            [_OTHER_MCP_SCHEMA], [_HRF_SCHEMA, _OTHER_MCP_SCHEMA], set()
+        )
+        names = {s["function"]["name"] for s in result}
+        assert names == {"mcp__hub__project_list", _HUB_RETRIEVE_FULL_SCHEMA_NAME}
+
+
+class TestHubRetrieveFullUnconditionalInclusion:
+    """Proves the three conditions Session 1.5b was scoped to fix, replicating
+    agent_loop.py's local-model schema-assembly branch (the _wants_mcp check
+    followed by _ensure_hub_retrieve_full_schema) end-to-end rather than
+    testing the helper in isolation. All three previously failed (a and c) or
+    were untested (b) before the unconditional-inclusion fix."""
+
+    def _local_branch_schemas(self, messages, mcp_schemas, disabled_tools=None):
+        last_user = _extract_last_user_message(messages)
+        last_content = last_user.lower()
+        wants_mcp = any(kw in last_content for kw in _MCP_KEYWORDS)
+        if not mcp_schemas:
+            all_tool_schemas = []
+        elif wants_mcp:
+            all_tool_schemas = mcp_schemas
+        else:
+            all_tool_schemas = []
+        return _ensure_hub_retrieve_full_schema(all_tool_schemas, mcp_schemas, disabled_tools or set())
+
+    def _names(self, schemas):
+        return [s["function"]["name"] for s in schemas]
+
+    def test_condition_a_no_keyword_match_at_all(self):
+        messages = [{"role": "user", "content": "what's the weather like today"}]
+        schemas = self._local_branch_schemas(messages, [_HRF_SCHEMA])
+        assert _HUB_RETRIEVE_FULL_SCHEMA_NAME in self._names(schemas)
+
+    def test_condition_b_native_tool_calling_model_no_marker(self):
+        # A native tool-calling round for an unrelated tool just completed --
+        # used_native=True, no tc- marker anywhere in the transcript.
+        messages = [{"role": "user", "content": "check on that file for me"}]
+        native = [{"id": "call_1", "name": "some_tool", "arguments": "{}"}]
+        _append_tool_results(
+            messages, "done", native, [{}], ["ordinary result, nothing special"],
+            used_native=True, round_num=1,
+        )
+        schemas = self._local_branch_schemas(messages, [_HRF_SCHEMA])
+        assert _HUB_RETRIEVE_FULL_SCHEMA_NAME in self._names(schemas)
+
+    def test_condition_c_marker_in_native_tool_result_now_discoverable(self):
+        # The exact Session 1.5 failure case: marker lands in a role="tool"
+        # message, invisible to _extract_last_user_message/keyword-gating --
+        # the schema must be present anyway now.
+        messages = [{"role": "user", "content": "ok"}]
+        native = [{"id": "call_1", "name": "some_tool", "arguments": "{}"}]
+        _append_tool_results(
+            messages, "", native, [{}],
+            ["cached under tc-a3f81c2d for later retrieval"],
+            used_native=True, round_num=1,
+        )
+        assert "tc-a3f81c2d" not in _extract_last_user_message(messages)  # still invisible to keyword scan
+        schemas = self._local_branch_schemas(messages, [_HRF_SCHEMA])
+        assert _HUB_RETRIEVE_FULL_SCHEMA_NAME in self._names(schemas)  # ...present anyway
+
+    def test_empty_message_no_mcp_schemas_still_empty(self):
+        # If mcp_schemas is empty (MCP disabled / hub down), there's nothing
+        # to unconditionally include -- must not fabricate a schema.
+        messages = [{"role": "user", "content": ""}]
+        schemas = self._local_branch_schemas(messages, [])
+        assert schemas == []
 
 
 class TestAppendToolResultsThoughtSignature:

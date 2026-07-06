@@ -671,14 +671,50 @@ _MCP_KEYWORDS = frozenset(["mcp", "browse", "browser", "website", "calendar", "e
                            "preprocess", "fileprep", "library", "upload to library", "process file",
                            "ingest", "pdf", "docx", "spreadsheet", "saved files", "personal docs",
                            # "tc-" is the hub tool-output-cache ref_id prefix (format tc-{8 hex}).
-                           # A compressor (Token Compression Session 2) leaves this marker in place
-                           # of a large tool result; matching it here surfaces hub_retrieve_full's
-                           # schema on the next local-model turn. Only reaches _last_user text when
-                           # the marker landed in a non-native tool-result wrapper (role="user" via
-                           # untrusted_context_message) — native tool_calls results are role="tool"
-                           # and are not scanned by _extract_last_user_message. See CLAUDE.md
-                           # "Token Compression" section for the native-model coverage gap.
+                           # Added in Token Compression Session 1.5 to surface hub_retrieve_full's
+                           # schema when a marker lands in a non-native tool-result wrapper
+                           # (role="user"). Superseded as the load-bearing mechanism for
+                           # hub_retrieve_full by Session 1.5b's unconditional local-model inclusion
+                           # below (_HUB_RETRIEVE_FULL_SCHEMA_NAME) — native tool_calls results are
+                           # role="tool" and were never visible to this keyword scan regardless of
+                           # which keyword was chosen. Left in place: harmless, and may still help
+                           # other keyword-driven cases in the text-model branch. See CLAUDE.md
+                           # "Token Compression" section for the full discoverability history.
                            "tc-"])
+# hub_retrieve_full is always available to local models regardless of message
+# content — see the unconditional-inclusion block in the per-round schema
+# assembly (search this file for this name). One small, cheap tool schema
+# that must be reachable the instant a Session-2 compressor drops a tc-
+# marker into ANY tool result, native or not — content-based gating
+# (always_inject DB flag, then _MCP_KEYWORDS) could not guarantee that.
+_HUB_RETRIEVE_FULL_SCHEMA_NAME = "mcp__hub__hub_retrieve_full"
+
+
+def _ensure_hub_retrieve_full_schema(all_tool_schemas: list, mcp_schemas: list, disabled_tools) -> list:
+    """hub_retrieve_full must be visible on every local-model turn, regardless
+    of keyword or always-inject gating (see _HUB_RETRIEVE_FULL_SCHEMA_NAME).
+
+    Derives the schema from mcp_schemas rather than a hardcoded literal, so it
+    stays in sync with hub_server.py's real tool definition and inherits any
+    disabled-tool filtering already applied upstream in
+    mcp_mgr.get_all_openai_schemas(). No-ops if hub_retrieve_full isn't in
+    mcp_schemas at all (MCP disabled, hub server down) or is in disabled_tools.
+    """
+    if disabled_tools and _HUB_RETRIEVE_FULL_SCHEMA_NAME in disabled_tools:
+        return all_tool_schemas
+    existing_names = {s.get("function", {}).get("name") for s in all_tool_schemas}
+    if _HUB_RETRIEVE_FULL_SCHEMA_NAME in existing_names:
+        return all_tool_schemas
+    hrf_schema = next(
+        (s for s in mcp_schemas
+         if s.get("function", {}).get("name") == _HUB_RETRIEVE_FULL_SCHEMA_NAME),
+        None,
+    )
+    if hrf_schema is None:
+        return all_tool_schemas
+    return all_tool_schemas + [hrf_schema]
+
+
 _ADMIN_SCHEMA_NAMES = frozenset([
     "manage_session", "manage_skills", "manage_tasks",
     "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens",
@@ -2731,6 +2767,8 @@ async def stream_agent_loop(
                 ]
             else:
                 all_tool_schemas = []
+            # Unconditional exception: see _HUB_RETRIEVE_FULL_SCHEMA_NAME above.
+            all_tool_schemas = _ensure_hub_retrieve_full_schema(all_tool_schemas, mcp_schemas, disabled_tools)
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
