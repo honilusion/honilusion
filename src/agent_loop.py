@@ -3612,7 +3612,7 @@ async def stream_agent_loop(
             if block.tool_type in _VERIFIER_EFFECTFUL_TOOLS:
                 _effectful_used = True
 
-            formatted = format_tool_result(desc, result)
+            formatted = format_tool_result(desc, result, is_api_model=_is_api_model, session_id=session_id)
             tool_results.append(formatted)
             tool_result_texts.append(formatted)
 

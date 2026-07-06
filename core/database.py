@@ -1850,14 +1850,24 @@ class HubToolOutputCache(Base):
     into context. 14-day TTL, swept on write."""
     __tablename__ = "hub_tool_output_cache"
 
-    id         = Column(Integer, primary_key=True)
-    ref_id     = Column(String, nullable=False)
-    session_id = Column(String, nullable=True)
-    tool_name  = Column(String, nullable=True)
-    payload    = Column(Text, nullable=False)
-    size_chars = Column(Integer, nullable=False)
-    truncated  = Column(Boolean, default=False)
-    created_at = Column(DateTime, nullable=False, default=utcnow_naive)
+    id           = Column(Integer, primary_key=True)
+    ref_id       = Column(String, nullable=False)
+    session_id   = Column(String, nullable=True)
+    tool_name    = Column(String, nullable=True)
+    payload      = Column(Text, nullable=False)
+    size_chars   = Column(Integer, nullable=False)
+    truncated    = Column(Boolean, default=False)
+    created_at   = Column(DateTime, nullable=False, default=utcnow_naive)
+    # Token Compression Session 2: set only when this row was written by the
+    # compressor (compress_tool_result), not by a plain uncompressed cache
+    # write. chars_before is the full original size (same figure as
+    # size_chars in the common case — kept as its own column so Session 3's
+    # stats read doesn't need to cross-reference size_chars); chars_after is
+    # the size of what actually replaced it in the tool result (row-crushed
+    # JSON or the excerpt+marker). Both nullable: non-compression cache
+    # writes leave them null.
+    chars_before = Column(Integer, nullable=True)
+    chars_after  = Column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_hub_tool_output_cache_ref_id", "ref_id", unique=True),
@@ -1971,7 +1981,9 @@ def _migrate_add_hub_persona_tables():
 
 
 def _migrate_add_hub_tool_output_cache():
-    """Create hub_tool_output_cache table if it doesn't exist."""
+    """Create hub_tool_output_cache table if it doesn't exist; add
+    chars_before/chars_after columns (Token Compression Session 2) if the
+    table already exists from an earlier install without them."""
     try:
         with engine.connect() as conn:
             existing = {r[0] for r in conn.execute(text(
@@ -1987,7 +1999,9 @@ def _migrate_add_hub_tool_output_cache():
                         payload TEXT NOT NULL,
                         size_chars INTEGER NOT NULL,
                         truncated BOOLEAN DEFAULT 0,
-                        created_at DATETIME NOT NULL
+                        created_at DATETIME NOT NULL,
+                        chars_before INTEGER,
+                        chars_after INTEGER
                     )
                 """))
                 conn.execute(text(
@@ -1999,6 +2013,20 @@ def _migrate_add_hub_tool_output_cache():
                     "ON hub_tool_output_cache(created_at)"
                 ))
                 logging.getLogger(__name__).info("Created hub_tool_output_cache table")
+            else:
+                cols = {r[1] for r in conn.execute(text(
+                    "PRAGMA table_info(hub_tool_output_cache)"
+                )).fetchall()}
+                if "chars_before" not in cols:
+                    conn.execute(text(
+                        "ALTER TABLE hub_tool_output_cache ADD COLUMN chars_before INTEGER"
+                    ))
+                    logging.getLogger(__name__).info("Added chars_before column to hub_tool_output_cache")
+                if "chars_after" not in cols:
+                    conn.execute(text(
+                        "ALTER TABLE hub_tool_output_cache ADD COLUMN chars_after INTEGER"
+                    ))
+                    logging.getLogger(__name__).info("Added chars_after column to hub_tool_output_cache")
             conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"hub tool output cache migration: {e}")

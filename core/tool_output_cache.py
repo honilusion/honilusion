@@ -23,11 +23,23 @@ def _sweep(db, HubToolOutputCache, utcnow_naive) -> None:
     db.query(HubToolOutputCache).filter(HubToolOutputCache.created_at < cutoff).delete()
 
 
-def store_tool_output(payload: str, tool_name: str | None, session_id: str | None) -> str:
+def store_tool_output(
+    payload: str,
+    tool_name: str | None,
+    session_id: str | None,
+    chars_before: int | None = None,
+    chars_after: int | None = None,
+) -> str:
     """Cache a tool output and return its ref_id (format: tc-{8 hex chars}).
 
     Runs the 14-day TTL sweep first, then applies the 1 MB payload cap
     (larger payloads are stored truncated with truncated=True).
+
+    chars_before/chars_after (Token Compression Session 2, both optional):
+    set by the compressor to record the size of the original content vs. the
+    size of what actually replaced it in the tool result (row-crushed JSON
+    or an excerpt+marker) — groundwork for Session 3's savings stats. Left
+    null for plain (non-compression) cache writes.
     """
     from sqlalchemy.exc import IntegrityError
     from core.database import SessionLocal, HubToolOutputCache, utcnow_naive
@@ -51,6 +63,8 @@ def store_tool_output(payload: str, tool_name: str | None, session_id: str | Non
                 size_chars=size_chars,
                 truncated=truncated,
                 created_at=utcnow_naive(),
+                chars_before=chars_before,
+                chars_after=chars_after,
             )
             db.add(row)
             try:

@@ -649,6 +649,142 @@ compressor) is unblocked** — it can assume the schema is always visible to
 local models and does not need to reason about `used_native`, tool-result
 wrapping, or keyword content at all.
 
+### Session 2: the compressor, wired into format_tool_result (complete)
+
+Sessions 1/1.5/1.5b were infrastructure with no effect on real traffic. This
+session builds the actual compression logic and wires it into the live
+tool-result path for the first time.
+
+**Correction to the session's own assumed example — read this before
+reaching for `canon_list` as a row-crush demo:** every MCP-sourced tool
+result (all Hub tools, fileprep, email-mcp, memory, rag, image_gen) arrives
+at `format_tool_result` as `{"stdout": <already-rendered string>, ...}` —
+`mcp_manager._do_call()` (`src/mcp_manager.py:476-502`) flattens any list
+data into human-readable text *inside the MCP tool itself* before it ever
+reaches this layer. There is no live JSON array to row-crush for MCP calls —
+only the **prose** path applies to them. Row-crush's real targets are native
+built-in Python tools that return `{"response": <summary>, "<key>": [<uniform
+dicts>], "exit_code": ...}` — confirmed concretely in
+`src/agent_tools/document_tools.py:553-557` (`"documents"`),
+`src/tool_implementations.py:1114` (`manage_calendar`'s `"events"`), and
+`src/tool_implementations.py:406` (`manage_tasks`'s `"tasks"`, a 10-key
+uniform schema per row — used as the live-verification target below).
+
+**Module:** `src/tool_output_compressor.py` (no import-time dependency on
+`src.tool_execution`, which imports *it* — the one thing it needs back,
+`_FORMATTER_HANDLED_KEYS`, is imported lazily inside `compress_tool_result`).
+
+```python
+def detect_array_of_objects(data, uniformity_threshold=0.8) -> list | None
+def row_crush(rows, keep_first=5, keep_last=3, sample_mid=3) -> (kept_rows, omitted_count)
+def is_prose_oversized(text, threshold=6000) -> bool
+def compress_tool_result(result, is_api_model, tool_name, session_id=None) -> dict | original
+```
+
+- `detect_array_of_objects`: accepts a bare list (validated directly) or a
+  dict (searches one level under any key — the real shape). Uniformity =
+  the mode (most common) frozenset of row keys covers ≥80% of rows; simple
+  exact-key-set matching, not partial top-N overlap.
+- `row_crush`: pure, never crashes or omits negative on a short array
+  (`len(rows) <= keep_first + keep_last` → returned unchanged, 0 omitted).
+  Middle sample is evenly spaced (`step = len(middle) / sample_mid`), not a
+  random pick.
+- `compress_tool_result`: `is_api_model=True` → returns `result` completely
+  untouched (not even copied). Local models: row-crush and prose-excerpt are
+  applied **independently** (different keys, a result can have either, both,
+  or neither) — row-crush scans non-`_FORMATTER_HANDLED_KEYS` keys for a
+  qualifying array; prose checks the first present key of `("stdout",
+  "output", "content", "response", "results")` in that priority order
+  (mirrors `format_tool_result`'s own if/elif chain — only the first one
+  present is ever actually rendered, so it's the only one worth excerpting).
+
+**Marker phrasing (verbatim — do not drift from this in a future session):**
+- Row-crush: `"…{omitted_count} similar rows omitted — full output: call hub_retrieve_full with ref_id='{ref_id}'"`
+  — spliced into the array as a **string element** at index `min(5, len(kept_rows))`
+  (right after the first-5 block, before the mid-sample + last-3).
+- Prose: `"[showing first {PROSE_EXCERPT_CHARS} chars of {total_chars} total — full text: call hub_retrieve_full with ref_id='{ref_id}']"`
+  followed by `\n` + the 1000-char excerpt.
+
+**chars_before/chars_after (Session 3 groundwork):** two new nullable
+`Integer` columns directly on `HubToolOutputCache` (not a separate stats
+table — `store_tool_output()` is already called exactly once per compression
+event, so the cache row *is* the natural home). `chars_before` = size of the
+full original content; `chars_after` = size of what actually replaced it
+(row-crushed JSON incl. marker, or excerpt+marker). Both computed
+byte-accurately via a same-length placeholder ref_id (`"tc-00000000"`)
+*before* the real one exists, avoiding a second DB round-trip. Both null on
+plain (non-compression) cache writes. `chars_before` slightly duplicates the
+existing `size_chars` column in the common case (both are "length of the
+full original") — kept as its own column anyway so Session 3's read path
+doesn't need to cross-reference two different write paths' semantics. Only
+Session 1's `_migrate_add_hub_tool_output_cache()` needed touching (it now
+also `ALTER TABLE ADD COLUMN`s these two if the table pre-exists without
+them); Session 3 will read them, no exposure built yet.
+
+**Wiring (`src/agent_loop.py`, `src/tool_execution.py`):**
+- `format_tool_result(description, result, is_api_model=False,
+  session_id=None)` — two new parameters, both optional/defaulted so any
+  other caller keeps working unchanged (there is exactly one real caller in
+  the whole repo: `agent_loop.py:3615`).
+- The entire `compress_tool_result()` call is wrapped in `try/except
+  Exception` inside `format_tool_result`. On any exception it's logged and
+  `result` stays bound to its original value (Python only rebinds on a
+  successful assignment) — the rest of `format_tool_result` proceeds exactly
+  as before Session 2, including the pre-existing 8000-char JSON-dump cap at
+  `tool_execution.py:973-980`, which is now the **fallback** for whatever
+  wasn't compressed (mid-sized non-array, non-oversized-prose payloads),
+  not the primary mechanism. **A compressor bug can never break a tool
+  round** — this is load-bearing given `format_tool_result` serves every
+  tool call in the system; there's a forced-exception test proving it
+  (`TestFormatToolResultFailSafe`).
+- `_is_api_model` (set once before the round loop, `agent_loop.py:2449-2458`)
+  and `session_id` (already a parameter of the same enclosing generator,
+  `agent_loop.py:~2080`) were both already in scope at the call site — this
+  was a single-hop parameter thread, not a multi-level walk.
+
+**Tests:** `tests/test_tool_output_compressor.py` — 26 tests: all four pure
+functions (uniform/non-uniform/mostly-uniform/empty/non-dict-array/
+nested-under-key/top-level-non-array detection; exact keep counts,
+shorter-than-keep-counts, exact-boundary, never-negative-omitted row-crush;
+exact-6000-boundary prose), the orchestrator (API passthrough, small-payload
+passthrough, big-array row-crush with ref_id/chars_before verification,
+big-prose excerpt verification, small-array-under-trigger passthrough,
+non-dict passthrough), and the fail-safe (forced exception → tool round
+completes normally with original output). Full suite: 4001 passed (4
+pre-existing, unrelated `test_gpu_compose_standalone.py` failures confirmed
+via `git stash` to exist on a clean pre-Session-2 checkout too — docker
+compose GPU-overlay YAML drift, nothing to do with this session).
+
+**Live-verified against the real deployment (2026-07-06), both paths, with
+real production data — not synthetic:**
+- **Row-crush:** `manage_tasks(action="list")` against the live DB's 30 real
+  scheduled tasks (8560-char array). Local model: crushed to 11 rows / 4225
+  chars with the correct `"…19 similar rows omitted"` marker. API model:
+  8095 chars, byte-for-byte unmodified, no marker. Retrieval returned the
+  exact original 30-row array. **Full model round-trip:** fed the crushed
+  output to `qwen/qwen3.5-9b` (native tool-calling) with a question
+  unanswerable from the 11-row sample alone (*"how many tasks are paused,
+  exactly?"*) — the model noticed the omission note **unprompted**, called
+  `hub_retrieve_full` with the right ref, got the true 30-row data back via
+  the real dispatch, and answered *"exactly 15"* — independently confirmed
+  as the correct count. This is airtight: the model could only get this
+  right by actually using the retrieval mechanism.
+- **Prose:** a real `bash` tool call (`cat` of the actual `agent_loop.py`
+  source inside the container, 10,036 real chars). Local model: excerpted
+  to 1,149 chars (1000-char excerpt + marker). API model: 10,081 chars,
+  unmodified, no marker. Retrieval returned the full original file content.
+- **API-model bypass:** proven directly (not inferred) for both paths above
+  by calling the real `format_tool_result(..., is_api_model=True, ...)` —
+  since compression depends *only* on this already-correct, unchanged
+  boolean flag, a live billable Claude/Gemini call would add no further
+  evidence; skipped for that reason.
+- Test cache rows deleted after verification; `manage_tasks(list)` is
+  read-only, no side effects on the real scheduled tasks.
+
+**Status: the compressor is live for local models on this deployment.**
+Session 3 (tiktoken-based token accounting + a stats/savings widget reading
+`chars_before`/`chars_after`) is next.
+
 ---
 
 ## Planned Features (honilusion-main)

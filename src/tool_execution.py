@@ -923,8 +923,29 @@ _FORMATTER_HANDLED_KEYS = {
 }
 
 
-def format_tool_result(description: str, result: Dict) -> str:
-    """Format a tool result into text for feeding back to the LLM."""
+def format_tool_result(
+    description: str,
+    result: Dict,
+    is_api_model: bool = False,
+    session_id: Optional[str] = None,
+) -> str:
+    """Format a tool result into text for feeding back to the LLM.
+
+    Token Compression Session 2: before the existing per-branch rendering,
+    try to compress the result for local models (row-crush a uniform array,
+    or excerpt oversized prose — see src.tool_output_compressor). Any
+    exception is caught here and swallowed — a compressor bug must never
+    break a tool round, so on failure this falls straight through to the
+    original, uncompressed behavior (including the 8000-char cap below,
+    which is now the fallback for whatever wasn't compressed, not the
+    primary mechanism).
+    """
+    try:
+        from src.tool_output_compressor import compress_tool_result
+        result = compress_tool_result(result, is_api_model, description, session_id)
+    except Exception:
+        logger.exception("tool_output_compressor failed; using uncompressed result")
+
     parts = [f"### {description}"]
 
     if "stdout" in result:
