@@ -402,6 +402,72 @@ Nav link: added `<button id="rail-hub">` in `static/index.html` icon rail (betwe
 
 ---
 
+## Token Compression — Build Status
+
+### Session 1: retrieve cache + hub_retrieve_full (complete)
+
+Large tool outputs can be parked in a cache behind a short `ref_id` instead of
+being re-injected into context, and fetched back later on demand. **Session 1
+built the cache and the retrieval side only** — nothing yet writes to the
+cache automatically; that's Session 2 (the compressor hooking
+`format_tool_result` / `agent_loop.py`, out of scope this session).
+
+**Model + migration:** `core/database.py` — `HubToolOutputCache` (`ref_id`
+unique-indexed, `session_id`, `tool_name`, `payload`, `size_chars`,
+`truncated`, `created_at` indexed) + `_migrate_add_hub_tool_output_cache()`,
+registered in `init_db()`.
+
+**Write helper (what Session 2 will call):** `core/tool_output_cache.py`
+```python
+def store_tool_output(payload: str, tool_name: str | None, session_id: str | None) -> str:
+    """Runs the 14-day TTL sweep, applies the 1 MB cap, returns a ref_id
+    (format tc-{8 hex chars})."""
+```
+Dependency-free; imports `core.database` lazily inside the function (house
+convention — lets tests monkeypatch `core.database.SessionLocal`). Sweep is
+sweep-on-write (no scheduler): every call first deletes cache rows older than
+14 days. Payloads over 1 MB are stored truncated with `truncated=True`.
+
+**Read side:** `hub_retrieve_full(ref_id)` — added to both
+`mcp_servers/hub_server.py` (stdio) and `routes/hub/hub_mcp.py` (FastMCP HTTP,
+auth via the existing Bearer middleware, no extra auth code needed). Validates
+`tc-` + 8 hex chars, returns a loud `"unsupported: ..."` error string on a
+malformed ref or a miss (expired/never-existed) — never an empty result.
+
+**Known limitation — always-inject does NOT cover built-in MCP servers:**
+The per-server `always_inject` flag (`McpServer.always_inject` in
+`core/database.py`) only exists for DB-backed integrations added via
+Settings → Integrations (e.g. `fileprep`). The five built-in stdio servers
+(`image_gen`, `memory`, `rag`, `email`, `hub`) have **no** `mcp_servers` row —
+they're registered purely in code by `register_builtin_servers()`
+(`src/builtin_mcp.py`), which `app.py`'s startup runs immediately before
+`mcp_manager.connect_all_enabled()` (the DB-driven connector). Inserting a
+fake `McpServer` row with `id="hub"` to flip `always_inject` would make
+`connect_all_enabled()` call `connect_server(server_id="hub")` a *second*
+time — `_connect_stdio` in `src/mcp_manager.py` has no idempotency guard, so
+this would spawn a duplicate `hub_server.py` subprocess and silently clobber
+the first one's entries in `_sessions`/`_tools`/`_connections`. Not attempted.
+`hub_retrieve_full` is still reachable without it: API models (Claude/GPT/
+Gemini) get all MCP schemas unconditionally; local models get it whenever a
+global `_MCP_KEYWORDS` hit occurs (the set includes the literal word "mcp").
+Fixing this properly needs either a builtin-server-aware always-inject list in
+`agent_loop.py`/`builtin_mcp.py`, or giving built-ins their own `McpServer`
+rows with a `is_builtin` flag that `connect_all_enabled()` skips — both are
+schema/agent_loop.py changes, out of scope for this session.
+
+**Tests:** `tests/test_hub_tool_output_cache.py` — store/retrieve round-trip,
+ref_id format, miss and malformed-ref loud errors, 1 MB truncation flag, TTL
+sweep eviction. All passing; existing `hub`/`mcp` test suites unaffected
+(138 passed after this change).
+
+**Verified end-to-end** (2026-07-06) over the live FastMCP HTTP endpoint with
+a real Bearer token: initialize succeeds, a stored ref returns its payload,
+a bogus `tc-00000000` ref returns the loud not-found error, a malformed ref
+returns the loud malformed error, and an unauthenticated request gets 401.
+Test token and test cache row were deleted after verification.
+
+---
+
 ## Planned Features (honilusion-main)
 
 - [x] Persistent API tokens (self-service, Settings → Account)

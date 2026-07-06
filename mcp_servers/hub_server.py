@@ -5,6 +5,7 @@ MCP server exposing Agent Hub inbox and project tools.
 """
 
 import asyncio
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -318,6 +319,17 @@ async def list_tools() -> list[Tool]:
             name="persona_category_list",
             description="List all persona categories.",
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="hub_retrieve_full",
+            description="Retrieve a full tool output previously parked in the Agent Hub cache by ref_id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": "string", "description": "Cache ref_id, format tc-{8 hex chars}"},
+                },
+                "required": ["ref_id"],
+            },
         ),
     ]
 
@@ -980,6 +992,29 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             lines = [f"Categories ({len(cats)}):\n"]
             for c in cats:
                 lines.append(f"- [{c.id}] {c.name}")
+            return _text("\n".join(lines))
+        finally:
+            db.close()
+
+    elif name == "hub_retrieve_full":
+        ref_id = arguments.get("ref_id", "").strip()
+        if not re.fullmatch(r"tc-[0-9a-f]{8}", ref_id):
+            return _text("Error: unsupported: malformed ref_id (expected tc-{8 hex chars})")
+        from core.database import HubToolOutputCache
+        db = SessionLocal()
+        try:
+            row = db.query(HubToolOutputCache).filter(HubToolOutputCache.ref_id == ref_id).first()
+            if not row:
+                return _text("Error: unsupported: ref not found (may have expired after 14 days)")
+            lines = [
+                f"Tool: {row.tool_name or '(unknown)'}",
+                f"Created: {row.created_at.isoformat() if row.created_at else '?'}",
+                f"Truncated: {row.truncated}",
+                "",
+                row.payload,
+            ]
+            if row.truncated:
+                lines.insert(3, "NOTE: original payload exceeded 1 MB and was truncated at cache time.")
             return _text("\n".join(lines))
         finally:
             db.close()

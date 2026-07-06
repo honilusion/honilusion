@@ -1844,6 +1844,27 @@ class HubPersona(TimestampMixin, Base):
     notes              = Column(Text, nullable=True)
 
 
+class HubToolOutputCache(Base):
+    """Agent Hub tool-output cache — large tool results parked behind a ref_id
+    for later retrieval via hub_retrieve_full, instead of re-injecting them
+    into context. 14-day TTL, swept on write."""
+    __tablename__ = "hub_tool_output_cache"
+
+    id         = Column(Integer, primary_key=True)
+    ref_id     = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    tool_name  = Column(String, nullable=True)
+    payload    = Column(Text, nullable=False)
+    size_chars = Column(Integer, nullable=False)
+    truncated  = Column(Boolean, default=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (
+        Index("ix_hub_tool_output_cache_ref_id", "ref_id", unique=True),
+        Index("ix_hub_tool_output_cache_created_at", "created_at"),
+    )
+
+
 def _migrate_seed_email_account():
     """If email_accounts is empty and settings.json has legacy flat imap_host/smtp_host
     keys, create a single default account from them so nothing breaks for users who
@@ -1947,6 +1968,40 @@ def _migrate_add_hub_persona_tables():
             conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"hub persona migration: {e}")
+
+
+def _migrate_add_hub_tool_output_cache():
+    """Create hub_tool_output_cache table if it doesn't exist."""
+    try:
+        with engine.connect() as conn:
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).fetchall()}
+            if "hub_tool_output_cache" not in existing:
+                conn.execute(text("""
+                    CREATE TABLE hub_tool_output_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ref_id VARCHAR NOT NULL,
+                        session_id VARCHAR,
+                        tool_name VARCHAR,
+                        payload TEXT NOT NULL,
+                        size_chars INTEGER NOT NULL,
+                        truncated BOOLEAN DEFAULT 0,
+                        created_at DATETIME NOT NULL
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_hub_tool_output_cache_ref_id "
+                    "ON hub_tool_output_cache(ref_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_hub_tool_output_cache_created_at "
+                    "ON hub_tool_output_cache(created_at)"
+                ))
+                logging.getLogger(__name__).info("Created hub_tool_output_cache table")
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"hub tool output cache migration: {e}")
 
 
 def _migrate_add_hub_project_context_tables():
@@ -2133,6 +2188,7 @@ def init_db():
     _migrate_add_hub_canon_table()
     _migrate_add_hub_project_context_tables()
     _migrate_add_hub_persona_tables()
+    _migrate_add_hub_tool_output_cache()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()
     _migrate_add_calendar_metadata()

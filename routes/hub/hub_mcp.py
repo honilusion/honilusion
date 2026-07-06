@@ -32,7 +32,8 @@ _hub_mcp = FastMCP(
         "inbox_mark_read to mark a message as read, "
         "project_update to create or update a project, "
         "project_list to list all projects, "
-        "project_get to get a specific project by name."
+        "project_get to get a specific project by name, "
+        "hub_retrieve_full to fetch a full tool output cached by ref_id."
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -641,6 +642,33 @@ def persona_category_list() -> str:
         lines = [f"Categories ({len(cats)}):\n"]
         for c in cats:
             lines.append(f"- [{c.id}] {c.name}")
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
+@_hub_mcp.tool()
+def hub_retrieve_full(ref_id: str) -> str:
+    """Retrieve a full tool output previously parked in the Agent Hub cache by ref_id."""
+    import re
+    ref_id = (ref_id or "").strip()
+    if not re.fullmatch(r"tc-[0-9a-f]{8}", ref_id):
+        return "Error: unsupported: malformed ref_id (expected tc-{8 hex chars})"
+    from core.database import SessionLocal, HubToolOutputCache
+    db = SessionLocal()
+    try:
+        row = db.query(HubToolOutputCache).filter(HubToolOutputCache.ref_id == ref_id).first()
+        if not row:
+            return "Error: unsupported: ref not found (may have expired after 14 days)"
+        lines = [
+            f"Tool: {row.tool_name or '(unknown)'}",
+            f"Created: {row.created_at.isoformat() if row.created_at else '?'}",
+            f"Truncated: {row.truncated}",
+            "",
+            row.payload,
+        ]
+        if row.truncated:
+            lines.insert(3, "NOTE: original payload exceeded 1 MB and was truncated at cache time.")
         return "\n".join(lines)
     finally:
         db.close()
