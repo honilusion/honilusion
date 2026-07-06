@@ -39,6 +39,7 @@ try:
         _classify_agent_request,
         _compute_final_metrics,
         _append_tool_results,
+        _extract_last_user_message,
         _MCP_KEYWORDS,
     )
     _IMPORTED_AGENT_LOOP = sys.modules.get("src.agent_loop")
@@ -352,6 +353,62 @@ class TestAppendToolResultsNativeContent:
         assert messages[0]["content"] == "thinking..."
         assert messages[1]["role"] == "user"
         assert "tool output" in messages[1]["content"]
+
+
+class TestHubRetrieveFullDiscoverability:
+    """Token Compression Session 1.5: a compressor (Session 2) leaves a
+    tc-{8 hex} marker in place of a large tool result. Local models only get
+    hub_retrieve_full's schema injected when _wants_mcp is True, which is
+    computed from _extract_last_user_message(messages) — the single most
+    recent role=="user" message. Whether that function ever sees the marker
+    depends on used_native: non-native tool results are wrapped into a
+    role="user" untrusted_context_message; native tool_calls results are
+    role="tool" and are never scanned. See agent_loop.py _MCP_KEYWORDS
+    comment and CLAUDE.md for the full writeup."""
+
+    def _wants_mcp(self, messages) -> bool:
+        last_user = _extract_last_user_message(messages)
+        last_content = last_user.lower()
+        return any(kw in last_content for kw in _MCP_KEYWORDS)
+
+    def test_tc_prefix_is_a_registered_keyword(self):
+        assert "tc-" in _MCP_KEYWORDS
+
+    def test_marker_in_non_native_tool_result_is_discoverable(self):
+        # Non-native (text/fenced) local models wrap tool output in a
+        # role="user" message — this is the path the "tc-" keyword fixes.
+        messages = [{"role": "user", "content": "check on that file for me"}]
+        _append_tool_results(
+            messages, "here's what I found", [],
+            ["cached under tc-a3f81c2d for later retrieval"], [],
+            used_native=False, round_num=1,
+        )
+        last_user = _extract_last_user_message(messages)
+        assert "tc-a3f81c2d" in last_user
+        assert self._wants_mcp(messages) is True
+
+    def test_marker_in_native_tool_result_is_not_discoverable(self):
+        # Native tool_calls results land in role="tool" messages, which
+        # _extract_last_user_message never inspects — known, documented gap.
+        messages = [{"role": "user", "content": "check on that file for me"}]
+        native = [{"id": "call_1", "name": "some_tool", "arguments": "{}"}]
+        _append_tool_results(
+            messages, "here's what I found", native, [{}],
+            ["cached under tc-a3f81c2d for later retrieval"],
+            used_native=True, round_num=1,
+        )
+        last_user = _extract_last_user_message(messages)
+        # The marker exists in the transcript (role="tool") but is invisible
+        # to the function that drives keyword-gating.
+        assert any(m.get("role") == "tool" and "tc-a3f81c2d" in m.get("content", "") for m in messages)
+        assert "tc-a3f81c2d" not in last_user
+        assert self._wants_mcp(messages) is False
+
+    def test_marker_in_real_user_message_is_always_discoverable(self):
+        # Regardless of used_native, if the human types/pastes a ref_id
+        # directly it's the literal last user message and always works.
+        messages = [{"role": "user", "content": "please retrieve tc-a3f81c2d"}]
+        assert self._wants_mcp(messages) is True
 
 
 class TestAppendToolResultsThoughtSignature:

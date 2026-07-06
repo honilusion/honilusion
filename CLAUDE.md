@@ -466,6 +466,93 @@ a bogus `tc-00000000` ref returns the loud not-found error, a malformed ref
 returns the loud malformed error, and an unauthenticated request gets 401.
 Test token and test cache row were deleted after verification.
 
+### Session 1.5: discoverability gap-fix (complete, partial win — see below)
+
+Session 1 flagged that `always_inject` can't be used for the built-in `hub`
+server without risking a duplicate stdio subprocess. Session 1.5's brief was
+to fix discoverability the safe way instead: **reverse the always-inject
+decision and use keyword-gating** (the existing, working mechanism) by adding
+a trigger keyword to `_MCP_KEYWORDS` (`agent_loop.py:669`) so a `tc-{8 hex}`
+marker (the format `store_tool_output()` uses for ref_ids) causes
+`hub_retrieve_full`'s schema to be injected for local models.
+
+**First, a correction to Session 1's own record:** while tracing this, it
+turned out `hub` was never excluded from the schema/prompt-injection path at
+all. `McpManager.is_builtin(server_id)` (`src/mcp_manager.py:606-613`) — the
+check that excludes built-ins from `get_all_openai_schemas()` and
+`get_tool_descriptions_for_prompt()` — only covers `{"image_gen", "memory",
+"rag", "email"}` plus anything prefixed `builtin_`. `"hub"` is **not** in
+that set (it was added later, in Agent Hub Phase 1, and apparently never
+back-added to `is_builtin()`). So `hub_retrieve_full` flows through the
+*normal* dynamic MCP schema path exactly like a user-added integration —
+confirmed by inspecting the deployed container directly. This doesn't change
+Session 1's always-inject finding (that one is about `McpServer` DB rows,
+a separate mechanism), but it means keyword-gating was always a live option
+for `hub`, not a fallback for an otherwise-invisible tool.
+
+**Key finding — `_extract_last_user_message` scope (this decided everything):**
+`_extract_last_user_message()` (`agent_loop.py:770-778`) scans `messages` in
+reverse for the first `role=="user"` entry and returns *only* that message's
+text. It never looks at `role=="tool"` or `role=="assistant"` content. This
+function feeds `_last_content`/`_effective_kw` matching at
+`agent_loop.py:2704-2711`. Whether a `tc-` marker embedded in a tool result
+is visible therefore depends entirely on `used_native`
+(`_resolve_tool_blocks`, `agent_loop.py:1619-1659` — set per round based on
+whether the model actually emitted native `tool_calls`):
+- **Non-native / text branch** (`used_native=False`): `_append_tool_results`
+  (`agent_loop.py:1727-1741`) wraps tool output in a single
+  `untrusted_context_message(...)`, which is **`role: "user"`**
+  (`src/prompt_security.py:60-82`). This becomes the last user-role message,
+  so `_extract_last_user_message` returns it — a `tc-` marker inside **is**
+  caught by keyword matching. **The `tc-` keyword fix works here.**
+- **Native branch** (`used_native=True`): results become `role: "tool"`
+  messages (`agent_loop.py:1720-1726`) — never scanned. A `tc-` marker here
+  is **invisible** to keyword-gating, no matter what's in `_MCP_KEYWORDS`.
+
+**This is not hypothetical for this deployment.** Live-tested against the
+actual configured local endpoint (LM Studio, `172.20.0.1:5678`): given
+`hub_retrieve_full`'s real schema, the model
+(`gemma-4-e2b-it-the-deckard-heretic-uncensored-thinking@q4_k_s`) returned
+`finish_reason: "tool_calls"` with a proper native `tool_calls` array — i.e.
+**the real local model on this box uses the native path**, the one branch
+the keyword fix does not cover. Feeding the real payload back (via the
+genuine `hub_server.call_tool` dispatch) as a `role: "tool"` message, the
+model correctly reported the retrieved content — proving the tool call
+itself works end-to-end once the schema is present. What's unresolved is
+getting the schema present on the turn after a compressor (Session 2) drops
+a marker into a *native* tool result.
+
+**What shipped:** `"tc-"` added to `_MCP_KEYWORDS`
+(`src/agent_loop.py:669-680`, with an inline comment covering this same
+scope note). `tests/test_agent_loop.py::TestHubRetrieveFullDiscoverability`
+— four tests proving, against the real `_extract_last_user_message` /
+`_append_tool_results` / `_MCP_KEYWORDS`: the keyword is registered; a
+marker in a non-native tool result is discoverable; a marker in a native
+tool result is **not** discoverable (documents the gap, doesn't just assume
+it); a marker typed directly by a human always works. All passing; full
+`hub`/`mcp`/`agent_loop` suite (200 tests) green after the change.
+
+**Verdict — reporting, not improvising further:** the keyword fix is real,
+safe, and strictly additive (API models were already covered; non-native
+local models are now covered; nothing regresses). But for *this*
+deployment's actual local model, it does not close the gap, because that
+model uses native tool-calling. Closing it needs one of:
+1. Widen the scan itself — e.g. have `_extract_last_user_message` (or a
+   sibling used only for this keyword check) also inspect recent
+   `role=="tool"` message content for a `tc-` marker.
+2. A targeted fix in `_append_tool_results`'s native branch — e.g. detect a
+   `tc-` marker in `tool_result_texts` at append time and stash a flag the
+   schema-injection code checks next round, without touching the general
+   keyword-matching function.
+3. Accept the gap for now and have Session 2's compressor itself decide,
+   per-call, whether to *also* emit a short natural-language hint in the
+   marker text (not just `tc-xxxxxxxx` bare) that's more likely to surface
+   through other means — doesn't fix discoverability, just papers over it.
+
+None of these were implemented — each touches `agent_loop.py`'s matching
+logic beyond "add a keyword," which needs a decision before Session 2 can
+assume this path actually works.
+
 ---
 
 ## Planned Features (honilusion-main)

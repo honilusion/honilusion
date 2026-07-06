@@ -669,7 +669,16 @@ _API_HOSTS = frozenset([
 _MCP_KEYWORDS = frozenset(["mcp", "browse", "browser", "website", "calendar", "event", "email",
                            "gmail", "screenshot", "navigate", "click", "miniflux", "rss", "feed",
                            "preprocess", "fileprep", "library", "upload to library", "process file",
-                           "ingest", "pdf", "docx", "spreadsheet", "saved files", "personal docs"])
+                           "ingest", "pdf", "docx", "spreadsheet", "saved files", "personal docs",
+                           # "tc-" is the hub tool-output-cache ref_id prefix (format tc-{8 hex}).
+                           # A compressor (Token Compression Session 2) leaves this marker in place
+                           # of a large tool result; matching it here surfaces hub_retrieve_full's
+                           # schema on the next local-model turn. Only reaches _last_user text when
+                           # the marker landed in a non-native tool-result wrapper (role="user" via
+                           # untrusted_context_message) — native tool_calls results are role="tool"
+                           # and are not scanned by _extract_last_user_message. See CLAUDE.md
+                           # "Token Compression" section for the native-model coverage gap.
+                           "tc-"])
 _ADMIN_SCHEMA_NAMES = frozenset([
     "manage_session", "manage_skills", "manage_tasks",
     "manage_endpoints", "manage_mcp", "manage_webhooks", "manage_tokens",
