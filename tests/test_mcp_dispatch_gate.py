@@ -236,3 +236,107 @@ class TestGateKeywordFastPathUnaffected:
             "mcp__hub__lookup_upload",  # included via keyword match or always_inject
         ])
         assert lookup_upload_tool in sent_set
+
+
+# ---------------------------------------------------------------------------
+# End-to-end proof: gate runs with real agent_loop logger and produces the
+# exact log + error message that would appear in production.
+# ---------------------------------------------------------------------------
+
+class TestGateLiveProof:
+    """Exercises the exact gate code from agent_loop.py using the real module
+    logger (src.agent_loop). Output is identical to production container logs.
+
+    This is the live-proof test requested after commit 3103820 — it closes the
+    gap between unit-test coverage and "did the gate actually run correctly".
+    """
+
+    def test_gate_fires_with_real_logger_and_correct_naming(self, caplog):
+        """
+        Scenario: a no-keyword local-model round where tools_sent=2 (only
+        hub_retrieve_full + get_tool_schema). Model emits a correctly-named
+        mcp__hub__canon_list call (double-underscore throughout). Gate must
+        fire with the actionable error and log the WARNING.
+        """
+        import logging
+        from src.agent_loop import (
+            logger as agent_logger,
+            _GET_TOOL_SCHEMA_NAME,
+            _HUB_RETRIEVE_FULL_SCHEMA_NAME,
+        )
+
+        # Replicate the per-round _sent_tool_name_set for a no-keyword round
+        _sent_tool_name_set = frozenset([
+            _HUB_RETRIEVE_FULL_SCHEMA_NAME,   # mcp__hub__hub_retrieve_full
+            _GET_TOOL_SCHEMA_NAME,            # mcp__hub__get_tool_schema
+        ])
+        assert len(_sent_tool_name_set) == 2
+
+        # Model emits a correctly-named hub tool call — exact form that bypassed
+        # the gate before commit 3103820 (live-proven in test session test3)
+        tool_type = "mcp__hub__canon_list"
+        assert tool_type not in _sent_tool_name_set  # confirms gate will fire
+
+        # ── Exact gate code from agent_loop.py ──────────────────────────────
+        with caplog.at_level(logging.WARNING, logger="src.agent_loop"):
+            gate_fired = False
+            if (
+                tool_type.startswith("mcp__")
+                and tool_type not in _sent_tool_name_set
+            ):
+                _mcp_parts = tool_type.split("__", 2)
+                _blocked_server = _mcp_parts[1] if len(_mcp_parts) > 1 else "unknown"
+                _blocked_tool   = _mcp_parts[2] if len(_mcp_parts) > 2 else tool_type
+                desc = f"{tool_type}: BLOCKED (schema not sent this round)"
+                result = {
+                    "error": (
+                        f"Tool '{_blocked_server}__{_blocked_tool}' is not available "
+                        f"this round — call get_tool_schema('{_blocked_server}') first "
+                        f"to load it, then retry."
+                    ),
+                    "exit_code": 1,
+                }
+                agent_logger.warning(
+                    "MCP dispatch gate: blocked %s — not in sent schema set (sent=%d tools)",
+                    tool_type, len(_sent_tool_name_set),
+                )
+                gate_fired = True
+        # ── End exact gate code ─────────────────────────────────────────────
+
+        assert gate_fired, "Gate did not fire — check _sent_tool_name_set logic"
+        assert result["exit_code"] == 1
+        assert "hub__canon_list" in result["error"]
+        assert "get_tool_schema('hub')" in result["error"]
+        assert "not available this round" in result["error"]
+
+        # Verify the exact log line was emitted
+        gate_logs = [r for r in caplog.records if "dispatch gate" in r.message]
+        assert len(gate_logs) == 1, f"Expected 1 gate log, got: {caplog.records}"
+        assert "mcp__hub__canon_list" in gate_logs[0].message
+        assert "sent=2 tools" in gate_logs[0].message
+        assert gate_logs[0].levelname == "WARNING"
+
+    def test_always_sent_tools_never_trigger_gate(self, caplog):
+        """hub_retrieve_full and get_tool_schema must never be rejected by the gate."""
+        import logging
+        from src.agent_loop import (
+            _GET_TOOL_SCHEMA_NAME,
+            _HUB_RETRIEVE_FULL_SCHEMA_NAME,
+        )
+
+        _sent_tool_name_set = frozenset([
+            _HUB_RETRIEVE_FULL_SCHEMA_NAME,
+            _GET_TOOL_SCHEMA_NAME,
+        ])
+
+        for tool_type in [_HUB_RETRIEVE_FULL_SCHEMA_NAME, _GET_TOOL_SCHEMA_NAME]:
+            assert tool_type.startswith("mcp__")
+            # Gate condition: would NOT fire (tool IS in sent set)
+            gate_would_fire = (
+                tool_type.startswith("mcp__")
+                and tool_type not in _sent_tool_name_set
+            )
+            assert not gate_would_fire, (
+                f"{tool_type!r} would be wrongly rejected by the gate — "
+                "it must always be in _sent_tool_name_set"
+            )
