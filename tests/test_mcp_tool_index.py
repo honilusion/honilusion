@@ -31,18 +31,21 @@ def _schema(server_id: str, tool_name: str) -> dict:
 class _FakeMcpManager:
     """Minimal stub that satisfies _build_mcp_server_index and _handle_get_tool_schema."""
 
-    def __init__(self, servers: dict, schemas: list):
+    def __init__(self, servers: dict, schemas: list, builtin_ids: set = None):
         # servers: {server_id: {"status": "connected", "name": "Display Name"}}
         self._servers = servers
         self._schemas = schemas
-        # _tools is used for tool count
+        self._builtin_ids = builtin_ids or set()
+        # _tools maps server_id → list of raw MCP tool dicts {name, description, ...}
+        # (matches the real McpManager._tools format, NOT OpenAI schema format)
         self._tools = {}
         for s in schemas:
             fn_name = s.get("function", {}).get("name", "")
             parts = fn_name.split("__", 2)
-            if len(parts) >= 2:
+            if len(parts) >= 3:
                 sid = parts[1]
-                self._tools.setdefault(sid, []).append(s)
+                tool_name = parts[2]
+                self._tools.setdefault(sid, []).append({"name": tool_name, "description": ""})
 
     def get_all_statuses(self):
         return self._servers
@@ -50,15 +53,18 @@ class _FakeMcpManager:
     def get_all_openai_schemas(self):
         return self._schemas
 
+    def is_builtin(self, server_id: str) -> bool:
+        return server_id in self._builtin_ids
+
 
 # ---------------------------------------------------------------------------
 # _build_mcp_server_index
 # ---------------------------------------------------------------------------
 
 class TestBuildMcpServerIndex:
-    def _index(self, servers, schemas=None):
+    def _index(self, servers, schemas=None, builtin_ids=None):
         from src.agent_loop import _build_mcp_server_index
-        mgr = _FakeMcpManager(servers, schemas or [])
+        mgr = _FakeMcpManager(servers, schemas or [], builtin_ids=builtin_ids or set())
         return _build_mcp_server_index(mgr)
 
     def test_returns_empty_on_none_manager(self):
@@ -75,15 +81,51 @@ class TestBuildMcpServerIndex:
         result = self._index(servers, schemas)
         assert "## Available MCP servers" in result
 
-    def test_lists_each_connected_server(self):
+    def test_lists_each_connected_non_builtin_server(self):
         servers = {
             "hub": {"status": "connected", "name": "Built-in: Agent Hub"},
-            "fileprep": {"status": "connected", "name": "fileprep"},
+            "abc123": {"status": "connected", "name": "fileprep"},
         }
-        schemas = [_schema("hub", "inbox_send"), _schema("fileprep", "preprocess")]
+        schemas = [_schema("hub", "inbox_send"), _schema("abc123", "preprocess")]
         result = self._index(servers, schemas)
         assert "`hub`" in result
-        assert "`fileprep`" in result
+        assert "`abc123`" in result
+
+    def test_shows_display_name_alongside_server_id_when_differs(self):
+        # DB-backed servers have UUID-style server_ids; model needs to see the
+        # friendly name alongside the id it must pass to get_tool_schema.
+        servers = {"abc123": {"status": "connected", "name": "fileprep"}}
+        schemas = [_schema("abc123", "preprocess_file")]
+        result = self._index(servers, schemas)
+        # The label must carry BOTH the id (for get_tool_schema) and the name
+        assert '`abc123` ("fileprep")' in result
+
+    def test_no_extra_label_when_display_name_matches_server_id(self):
+        # When server_id == display_name (e.g. "hub"), no redundant parenthetical.
+        servers = {"hub": {"status": "connected", "name": "hub"}}
+        schemas = [_schema("hub", "t")]
+        result = self._index(servers, schemas)
+        assert '`hub` ("hub")' not in result
+        assert "`hub`" in result
+
+    def test_excludes_builtin_servers(self):
+        servers = {
+            "hub": {"status": "connected", "name": "Hub"},
+            "memory": {"status": "connected", "name": "Built-in: Memory"},
+            "email": {"status": "connected", "name": "Built-in: Email"},
+        }
+        schemas = [_schema("hub", "t"), _schema("memory", "manage"), _schema("email", "send")]
+        # memory and email are builtins — their tools are in FUNCTION_TOOL_SCHEMAS already
+        result = self._index(servers, schemas, builtin_ids={"memory", "email"})
+        assert "`hub`" in result
+        assert "`memory`" not in result
+        assert "`email`" not in result
+
+    def test_returns_empty_when_all_servers_are_builtins(self):
+        servers = {"memory": {"status": "connected", "name": "Memory"}}
+        schemas = [_schema("memory", "t")]
+        result = self._index(servers, schemas, builtin_ids={"memory"})
+        assert result == ""
 
     def test_includes_tool_count(self):
         servers = {"hub": {"status": "connected", "name": "Hub"}}
@@ -97,10 +139,11 @@ class TestBuildMcpServerIndex:
         result = self._index(servers, [_schema("hub", "t")])
         assert _MCP_SERVER_PURPOSES["hub"][:20] in result
 
-    def test_fallback_purpose_for_unknown_server(self):
-        servers = {"custom_srv": {"status": "connected", "name": "My Custom Server"}}
-        result = self._index(servers, [_schema("custom_srv", "t")])
-        assert "My Custom Server" in result
+    def test_fallback_purpose_uses_tool_names(self):
+        servers = {"abc123": {"status": "connected", "name": "MyServer"}}
+        schemas = [_schema("abc123", "do_thing"), _schema("abc123", "check_status")]
+        result = self._index(servers, schemas)
+        assert "do_thing" in result or "check_status" in result
 
     def test_disconnected_server_not_listed(self):
         servers = {
@@ -114,6 +157,14 @@ class TestBuildMcpServerIndex:
         servers = {"hub": {"status": "connected", "name": "Hub"}}
         result = self._index(servers, [_schema("hub", "t")])
         assert "get_tool_schema" in result
+
+    def test_header_contains_prohibition(self):
+        # Header must be an absolute prohibition, not a suggestion, so models
+        # don't try to call tools before fetching their schema.
+        servers = {"hub": {"status": "connected", "name": "Hub"}}
+        result = self._index(servers, [_schema("hub", "t")])
+        assert "MUST" in result
+        assert "NOT" in result or "do not" in result.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -432,6 +432,80 @@ schemas), so the model can call them natively.
 
 ---
 
+## MCP Dispatch Gate (2026-07-06)
+
+### Problem (discovered during live testing of Tool Index)
+
+The Tool Index + `get_tool_schema` mechanism is **advisory-only prompt engineering,
+not an actual access barrier.** A model that "knows" tool names from training/memory
+can call any `mcp__server__tool` with correct naming and it will dispatch and execute,
+even if that server's schemas were never in the round's sent set. Proven in live test:
+model called `mcp__hub__project_list` (hub NOT in tools_sent=2) and received real
+project data. `function_call_to_tool_block` in `tool_schemas.py` accepts any
+`mcp__*` string regardless of what was sent.
+
+### Scope of `disabled_tools` bypass
+
+`disabled_tools` is a separately configured set of explicitly-blocked tool names.
+It works correctly for its purpose — it is NOT the same gap. The gap was specifically:
+tools not explicitly disabled AND not in the sent schema set still executed. These are
+orthogonal mechanisms. `disabled_tools` does not need to be fixed.
+
+### Solution: `_sent_tool_name_set` gate in `agent_loop.py`
+
+Added a per-round runtime dispatch gate in the tool execution loop (alongside the
+existing `tool_policy.blocks()` check at the `for block in tool_blocks:` loop):
+
+```python
+_sent_tool_name_set: frozenset = frozenset(n for n in _tool_names_sent if n)
+# ... (in tool execution loop)
+elif (
+    block.tool_type.startswith("mcp__")
+    and block.tool_type not in _sent_tool_name_set
+):
+    # Reject with actionable error
+    result = {"error": "Tool '...' is not available this round — call get_tool_schema('hub') first...", ...}
+```
+
+`_sent_tool_name_set` is computed per-round from `all_tool_schemas` — the same list
+passed to the LLM — so it accurately reflects what was actually offered.
+
+### Gate properties
+
+- **Always-sent tools are never rejected**: `hub_retrieve_full` and `get_tool_schema`
+  are unconditionally added by `_ensure_hub_retrieve_full_schema()` and
+  `_ensure_get_tool_schema_schema()` → always in `_sent_tool_name_set` → gate allows.
+- **Fetched-server tools pass on next round**: `_ensure_fetched_server_schemas()` adds
+  all tools for servers in `_fetched_servers` → those names enter `_sent_tool_name_set`
+  the round after `get_tool_schema` → gate allows correctly.
+- **Keyword path is unaffected**: when `_wants_mcp=True`, ALL MCP schemas are in
+  `all_tool_schemas` → all in `_sent_tool_name_set` → no rejection ever.
+- **API models are unaffected**: `_is_api_model=True` means all schemas are sent
+  unconditionally → `_sent_tool_name_set` covers all → gate is a no-op in practice.
+- **Wrong naming still caught earlier**: models that emit `mcp_hub__tool` (single
+  underscore) fail in `function_call_to_tool_block` before even reaching the gate.
+  The gate closes the gap for correct-naming bypasses only.
+
+### Error message (actionable)
+
+```
+Tool 'hub__project_list' is not available this round — call get_tool_schema('hub') 
+first to load it, then retry.
+```
+
+### Tests
+
+`tests/test_mcp_dispatch_gate.py` — 14 tests covering:
+- Always-sent tools (hub_retrieve_full, get_tool_schema) never rejected
+- Unsent hub and non-hub tools ARE rejected (correct `not in` check)
+- Error message is actionable: names the tool, tells model what to do
+- After `get_tool_schema`: `_ensure_fetched_server_schemas` adds tools to sent set
+- API model path: full sent set → gate is no-op
+- `_force_answer` round: empty sent set → any mcp call would be rejected (correct)
+- Keyword path: all schemas in sent set → no rejection
+
+---
+
 ## Agent Hub (Phase 1)
 
 Added in commit "feat: Agent Hub Phase 1 — inbox and projects"

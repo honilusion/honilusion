@@ -716,10 +716,15 @@ _MCP_SERVER_PURPOSES = {
 def _build_mcp_server_index(mcp_mgr) -> str:
     """Return a compact one-line-per-server index for the system prompt.
 
+    Only includes non-builtin MCP servers — servers where get_tool_schema is
+    actually needed to unlock their schemas (keyword-gated or absent by default).
+    Builtin servers (memory, rag, email, image_gen, builtin_browser) are excluded
+    because their tools are already present in FUNCTION_TOOL_SCHEMAS as native tools.
+
     Derived from the live MCP manager state — no separate hand-maintained list.
-    Builtin servers use _MCP_SERVER_PURPOSES; DB-backed servers fall back to
-    their configured display name. Returns "" when mcp_mgr is None or no servers
-    are connected.
+    Known server purposes from _MCP_SERVER_PURPOSES; DB-backed servers that aren't
+    in the dict get a tool-name-derived description as fallback.
+    Returns "" when mcp_mgr is None or no non-builtin servers are connected.
     """
     if not mcp_mgr:
         return ""
@@ -731,16 +736,39 @@ def _build_mcp_server_index(mcp_mgr) -> str:
     for server_id, conn in statuses.items():
         if conn.get("status") not in ("connected", "ready"):
             continue
+        if mcp_mgr.is_builtin(server_id):
+            continue  # tools always present via FUNCTION_TOOL_SCHEMAS; get_tool_schema not needed
         tool_count = len(mcp_mgr._tools.get(server_id, []))
         display_name = conn.get("name") or server_id
-        purpose = _MCP_SERVER_PURPOSES.get(server_id) or display_name
-        lines.append(f"- `{server_id}` ({tool_count} tools): {purpose}")
+        if server_id in _MCP_SERVER_PURPOSES:
+            purpose = _MCP_SERVER_PURPOSES[server_id]
+        else:
+            # Derive purpose from tool names for DB-backed / user-added servers.
+            # _tools values are raw MCP tool dicts {name, description, ...}, not strings.
+            server_tools = mcp_mgr._tools.get(server_id) or []
+            short_names = [
+                (t.get("name") if isinstance(t, dict) else str(t))
+                for t in server_tools[:4]
+            ]
+            if short_names:
+                purpose = f"{display_name} — tools: {', '.join(n for n in short_names if n)}"
+                if len(server_tools) > 4:
+                    purpose += f" (+{len(server_tools)-4} more)"
+            else:
+                purpose = display_name
+        if display_name and display_name != server_id:
+            label = f"`{server_id}` (\"{display_name}\")"
+        else:
+            label = f"`{server_id}`"
+        lines.append(f"- {label} ({tool_count} tools): {purpose}")
     if not lines:
         return ""
     header = (
         "\n\n## Available MCP servers\n"
-        "Use `get_tool_schema` with a server_id below to get that server's full "
-        "tool schemas when you need to call one of its tools.\n"
+        "IMPORTANT: You do NOT have the schemas for any server listed below. "
+        "You MUST call `get_tool_schema` with the server_id (the value in backticks) "
+        "before attempting to call any of its tools. "
+        "Calling a tool on a server before fetching its schema will always fail.\n"
     )
     return header + "\n".join(lines)
 
@@ -2897,6 +2925,8 @@ async def stream_agent_loop(
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
+        # Set form for O(1) gate checks at dispatch time (see MCP dispatch gate below).
+        _sent_tool_name_set: frozenset = frozenset(n for n in _tool_names_sent if n)
         logger.info(f"[agent-debug] round={round_num} model={model} _is_api_model={_is_api_model} tools_sent={len(_tool_names_sent)} tool_names={_tool_names_sent[:15]} relevant_tools={sorted(_relevant_tools)[:15] if _relevant_tools else 'ALL'}")
 
         # Primary target + any configured fallback models. stream_llm_with_fallback
@@ -3430,6 +3460,34 @@ async def stream_agent_loop(
                     "blocked": True,
                 }
                 logger.info("Tool blocked before start by policy: %s", block.tool_type)
+            elif (
+                block.tool_type.startswith("mcp__")
+                and block.tool_type not in _sent_tool_name_set
+            ):
+                # MCP dispatch gate: reject any mcp__ call whose schema was not
+                # sent this round. Prevents models from bypassing keyword gating
+                # or the get_tool_schema discovery flow by calling tools they
+                # "know" from training/memory. hub_retrieve_full and get_tool_schema
+                # are always in _sent_tool_name_set via _ensure_* functions, so
+                # they are never rejected here. get_tool_schema fetched servers are
+                # also safe: _ensure_fetched_server_schemas adds their tools next
+                # round. API models have all schemas in _sent_tool_name_set
+                # unconditionally, so this gate is a no-op for them in practice.
+                _mcp_parts = block.tool_type.split("__", 2)
+                _blocked_server = _mcp_parts[1] if len(_mcp_parts) > 1 else "unknown"
+                _blocked_tool = _mcp_parts[2] if len(_mcp_parts) > 2 else block.tool_type
+                desc = f"{block.tool_type}: BLOCKED (schema not sent this round)"
+                result = {
+                    "error": (
+                        f"Tool '{_blocked_server}__{_blocked_tool}' is not available this round — "
+                        f"call get_tool_schema('{_blocked_server}') first to load it, then retry."
+                    ),
+                    "exit_code": 1,
+                }
+                logger.warning(
+                    "MCP dispatch gate: blocked %s — not in sent schema set (sent=%d tools)",
+                    block.tool_type, len(_sent_tool_name_set),
+                )
             else:
                 yield (
                     f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": round_num})}\n\n'
