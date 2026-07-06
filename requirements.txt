@@ -3,6 +3,10 @@ uvicorn
 python-multipart
 python-dotenv
 httpx
+# Token counting for compression stats (src/token_counter.py).
+# Uses cl100k_base encoding as a cross-model approximation; not used for
+# context-trimming decisions (estimate_tokens() in model_context.py is unchanged).
+tiktoken
 pydantic>=2.13.4
 pydantic-settings>=2.14.1
 SQLAlchemy

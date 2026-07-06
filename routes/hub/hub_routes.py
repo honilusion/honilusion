@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.database import SessionLocal, HubMessage, HubProject, HubCanon, HubProjectSection, HubProjectChangelog, HubPersona, HubPersonaCategory
+from core.database import SessionLocal, HubMessage, HubProject, HubCanon, HubProjectSection, HubProjectChangelog, HubPersona, HubPersonaCategory, HubToolOutputCache
 from src.auth_helpers import require_authenticated_request, effective_user
 from src.constants import STATIC_DIR
 
@@ -852,6 +852,93 @@ def setup_hub_routes() -> APIRouter:
             return {"response": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ---------------------------------------------------------------------------
+    # Compression stats
+    # ---------------------------------------------------------------------------
+
+    @router.get("/compression_stats")
+    async def compression_stats(request: Request):
+        """Return token-savings stats derived from HubToolOutputCache.
+
+        Tokens are approximated:
+        - tokens_before: tiktoken cl100k_base on payload (the stored original text)
+        - tokens_after: chars_after / 4 (the compressed marker's char count; marker
+          text is not stored, only its length)
+        Falls back to chars/4 for tokens_before if tiktoken is unavailable.
+
+        Time windows: all_time, last_24h, last_7d (based on created_at).
+        """
+        require_authenticated_request(request)
+
+        from datetime import timedelta
+        from src.token_counter import count_tokens_approx, chars_to_tokens_approx
+
+        db = SessionLocal()
+        try:
+            rows = db.query(HubToolOutputCache).filter(
+                HubToolOutputCache.chars_before != None  # noqa: E711
+            ).all()
+        finally:
+            db.close()
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoffs = {
+            "all_time": None,
+            "last_7d": now - timedelta(days=7),
+            "last_24h": now - timedelta(hours=24),
+        }
+
+        def _window_stats(subset):
+            if not subset:
+                return {
+                    "events": 0,
+                    "chars_before": 0, "chars_after": 0,
+                    "tokens_before_approx": 0, "tokens_after_approx": 0,
+                    "reduction_pct": 0.0,
+                }
+            cb = sum(r.chars_before for r in subset)
+            ca = sum(r.chars_after for r in subset)
+            tb = sum(
+                count_tokens_approx(r.payload) if r.payload else chars_to_tokens_approx(r.chars_before)
+                for r in subset
+            )
+            ta = sum(chars_to_tokens_approx(r.chars_after) for r in subset)
+            pct = round((1 - ta / tb) * 100, 1) if tb > 0 else 0.0
+            return {
+                "events": len(subset),
+                "chars_before": cb, "chars_after": ca,
+                "tokens_before_approx": tb, "tokens_after_approx": ta,
+                "reduction_pct": pct,
+            }
+
+        windows = {}
+        for label, cutoff in cutoffs.items():
+            subset = rows if cutoff is None else [
+                r for r in rows
+                if r.created_at and r.created_at >= cutoff
+            ]
+            windows[label] = _window_stats(subset)
+
+        # Per-tool breakdown (all time)
+        by_tool: dict[str, list] = {}
+        for r in rows:
+            by_tool.setdefault(r.tool_name or "unknown", []).append(r)
+        tool_breakdown = []
+        for tool_name, tool_rows in sorted(by_tool.items()):
+            s = _window_stats(tool_rows)
+            s["tool_name"] = tool_name
+            tool_breakdown.append(s)
+        tool_breakdown.sort(key=lambda x: x["tokens_before_approx"], reverse=True)
+
+        return {
+            "token_counting": {
+                "method": "tiktoken cl100k_base on payload for tokens_before; chars_after/4 ratio for tokens_after",
+                "note": "cl100k_base approximates GPT-4-class tokenization; non-OpenAI models will differ",
+            },
+            **windows,
+            "by_tool": tool_breakdown,
+        }
 
     return router
 

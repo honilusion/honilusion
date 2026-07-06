@@ -1008,9 +1008,27 @@ real production data — not synthetic:**
 - Test cache rows deleted after verification; `manage_tasks(list)` is
   read-only, no side effects on the real scheduled tasks.
 
-**Status: the compressor is live for local models on this deployment.**
-Session 3 (tiktoken-based token accounting + a stats/savings widget reading
-`chars_before`/`chars_after`) is next.
+**Status: the compressor is live and Token Compression Phase 1 is COMPLETE.**
+
+Session 3 added tiktoken-based token accounting and a stats endpoint (commit after 5fa2ecc).
+
+**Token counter module:** `src/token_counter.py`
+- `count_tokens_approx(text: str) -> int` — tiktoken cl100k_base on actual text; falls back to `len(text)//4` if tiktoken unavailable
+- `chars_to_tokens_approx(char_count: int) -> int` — ratio conversion (4 chars/token) for when text isn't stored
+- `tiktoken` added to `requirements.txt`
+- Module is intentionally isolated; does NOT touch `estimate_tokens()` in `model_context.py` (that heuristic is unchanged)
+
+**Stats endpoint:** `GET /api/hub/compression_stats` (auth required)
+- Token accounting approach: `tokens_before` = tiktoken on `payload` (original text stored in cache); `tokens_after` = `chars_after / 4` (compressed marker char count stored, not marker text)
+- Response fields: `all_time`, `last_7d`, `last_24h` windows each with `events`, `chars_before`, `chars_after`, `tokens_before_approx`, `tokens_after_approx`, `reduction_pct`; plus `by_tool` list sorted by `tokens_before_approx` desc; plus `token_counting` metadata block
+- No sidebar widget scaffold exists; endpoint is the delivery boundary for Phase 1
+
+**Live cumulative savings (2026-07-06, 4 compression events):**
+- chars: 44,572 → 6,551 (saved 38,021)
+- tokens (cl100k_base approx): 11,822 → 1,638 — **86.1% reduction**
+- Per-tool: `mcp__hub__get_tool_schema` 92.7%, `mcp__hub__hub_retrieve_full` 89.4%, `web_search` 89.2%, `manage_tasks: list` 71.7%
+
+Tests: `tests/test_compression_stats.py` (23 tests: token_counter sanity, stats aggregation, endpoint shape/auth/empty-cache/sort-order).
 
 ---
 
