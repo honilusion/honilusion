@@ -331,6 +331,28 @@ async def list_tools() -> list[Tool]:
                 "required": ["ref_id"],
             },
         ),
+        Tool(
+            name="lookup_upload",
+            description=(
+                "Look up an uploaded file by original filename (partial match), sanitized name, "
+                "file ID, or SHA-256 hash prefix. Returns the on-disk path, fileprep path (if "
+                "the file was preprocessed to Markdown), MIME type, size, and upload timestamp. "
+                "Use this to find the real path for a file the user uploaded by name."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Search term: partial original filename (e.g. 'NoFly', 'DOJ'), "
+                            "file ID (32-hex + ext), or hash prefix (min 8 chars)"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -1019,7 +1041,75 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         finally:
             db.close()
 
+    elif name == "lookup_upload":
+        return _text(_lookup_upload(arguments.get("query", "")))
+
     return _text(f"Unknown tool: {name}")
+
+
+def _lookup_upload(query: str) -> str:
+    """Search uploads.json for a file matching query (filename/id/hash)."""
+    import json
+    import os
+    query = (query or "").strip()
+    if not query:
+        return "Error: query is required — provide a filename or partial hash to search for"
+
+    from src.constants import UPLOAD_DIR
+    uploads_json = os.path.join(UPLOAD_DIR, "uploads.json")
+    if not os.path.exists(uploads_json):
+        return "Error: no uploads found — uploads index does not exist"
+
+    try:
+        with open(uploads_json, "r", encoding="utf-8") as f:
+            index = json.load(f)
+    except Exception as e:
+        return f"Error: failed to read uploads index: {e}"
+
+    if not isinstance(index, dict):
+        return "Error: uploads index is malformed"
+
+    q = query.lower()
+    matches = []
+    for info in index.values():
+        if not isinstance(info, dict):
+            continue
+        original_name = (info.get("original_name") or info.get("name") or "").lower()
+        name = (info.get("name") or "").lower()
+        file_id = (info.get("id") or "").lower()
+        file_hash = (info.get("hash") or "").lower()
+        if (q in original_name or q in name or q in file_id or
+                (len(q) >= 8 and file_hash.startswith(q))):
+            matches.append(info)
+
+    if not matches:
+        return (
+            f"Error: no uploads found matching '{query}' — "
+            "checked original filenames, sanitized names, file IDs, and hashes"
+        )
+
+    fileprep_dir = os.path.join(UPLOAD_DIR, ".fileprep")
+    lines = [f"Found {len(matches)} upload(s) matching '{query}':\n"]
+    for info in matches:
+        file_id = info.get("id") or "?"
+        original_name = info.get("original_name") or info.get("name") or "?"
+        path = info.get("path") or "?"
+        mime = info.get("mime") or "?"
+        size = info.get("size") or 0
+        uploaded_at = info.get("uploaded_at") or "?"
+        owner = info.get("owner") or "?"
+        fp_path = os.path.join(fileprep_dir, f"{file_id}.md")
+        fp_note = f"\n  fileprep: {fp_path}" if os.path.exists(fp_path) else ""
+        lines.append(
+            f"- {original_name}\n"
+            f"  id: {file_id}\n"
+            f"  path: {path}\n"
+            f"  mime: {mime}, size: {size} bytes\n"
+            f"  uploaded: {uploaded_at} by {owner}"
+            f"{fp_note}"
+        )
+
+    return "\n".join(lines)
 
 
 async def run():

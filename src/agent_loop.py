@@ -670,6 +670,7 @@ _MCP_KEYWORDS = frozenset(["mcp", "browse", "browser", "website", "calendar", "e
                            "gmail", "screenshot", "navigate", "click", "miniflux", "rss", "feed",
                            "preprocess", "fileprep", "library", "upload to library", "process file",
                            "ingest", "pdf", "docx", "spreadsheet", "saved files", "personal docs",
+                           "upload", "uploaded", "attachment",
                            # "tc-" is the hub tool-output-cache ref_id prefix (format tc-{8 hex}).
                            # Added in Token Compression Session 1.5 to surface hub_retrieve_full's
                            # schema when a marker lands in a non-native tool-result wrapper

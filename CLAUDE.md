@@ -279,6 +279,85 @@ FastMCP DNS rebinding protection must be disabled:
 
 ---
 
+## Upload Storage — Path Pattern and Filename Lookup
+
+### On-disk path pattern (confirmed across all real uploads, 2026-07-06)
+
+```
+/app/data/uploads/<yyyy>/<mm>/<dd>/<uuid-hex>.<ext>   ← original file
+/app/data/uploads/.fileprep/<uuid-hex>.<ext>.md        ← fileprep Markdown output (if preprocessed)
+/app/data/uploads/uploads.json                         ← authoritative hash↔filename index
+```
+
+The `uuid-hex` portion is a 32-character hex string (Python `uuid.uuid4().hex`).
+The extension is stripped of non-alphanumeric characters at save time (`_build_upload_id`
+in `src/upload_handler.py`). Extensionless files (Dockerfiles, etc.) have a bare 32-hex id.
+
+### The mapping — `uploads.json` (not a database table)
+
+`/app/data/uploads/uploads.json` is a flat JSON dict keyed by `owner:sha256_hash`.
+Each value is a record with:
+
+| Field | Description |
+|---|---|
+| `id` | `<uuid-hex>.<ext>` — the on-disk filename within the date dir |
+| `path` | Full absolute path to the original file |
+| `original_name` | **The real filename as uploaded** (e.g. `DOJ-FBI_NoFlyLists.pdf`) |
+| `name` | Sanitized filename (`secure_filename()` — spaces→underscores, special chars stripped) |
+| `hash` | SHA-256 of file contents (used for deduplication) |
+| `mime` | Detected MIME type |
+| `size` | File size in bytes |
+| `uploaded_at` | ISO timestamp |
+| `last_accessed` | ISO timestamp, updated on duplicate-detect and download |
+| `owner` | Odysseus username who uploaded the file |
+
+The UI shows `original_name` for attachment display. The `name` field is never
+shown to users — it's the sanitized storage key only.
+
+### Existing code helpers
+
+- `UploadHandler.get_upload_info(upload_id)` — looks up by `id` (the uuid-hex filename), returns full record
+- `UploadHandler.resolve_upload(upload_id, owner, auth_manager)` — owner-aware lookup, returns record with verified path
+- `UploadHandler._load_upload_index()` — loads the raw `uploads.json` dict
+
+These methods operate on the `id` field (uuid-hex), not on the human filename. Use
+`lookup_upload` (below) when you need to go from a human filename to the path.
+
+### `lookup_upload` MCP tool (added 2026-07-06)
+
+**Location:** `mcp_servers/hub_server.py` (stdio) and `routes/hub/hub_mcp.py` (FastMCP HTTP)
+
+**When to use:** Any time the user refers to an uploaded file by name and you need the
+actual on-disk path or fileprep path. Do NOT `find` or `ls` the upload directory — use this
+tool instead.
+
+```
+lookup_upload(query: str) -> str
+```
+
+- `query` is matched (case-insensitive) against: `original_name`, `name`, `id`, and
+  `hash` prefix (min 8 chars)
+- Returns: original filename, on-disk path, fileprep path (if `.fileprep/<id>.md` exists),
+  MIME type, size, upload timestamp, owner
+- No match → loud `Error:` string (never empty / silent)
+- Empty query → loud `Error:` string
+
+**Discoverability:** keyword-gated via `_MCP_KEYWORDS` — "upload", "uploaded", and
+"attachment" were added in the same commit. When a user says "find the document I
+uploaded" or "look up my PDF attachment", these keywords fire and the schema is
+injected. API models get all MCP schemas unconditionally as always. No unconditional
+inclusion needed (unlike `hub_retrieve_full`) because the user's own words always
+surface the keyword — this tool is never triggered by a tool-result ref in the middle
+of an agentic chain.
+
+**Tests:** `tests/test_lookup_upload.py` — 19 tests: full match, partial match,
+case-insensitive, multi-match, hash prefix, file-ID match, no-match loud error,
+empty-query loud error, fileprep-present/absent, sanitized-name match,
+original-name-with-spaces match, missing-index error, short-hash no-crash, call_tool
+dispatch, keyword checks. All passing.
+
+---
+
 ## Agent Hub (Phase 1)
 
 Added in commit "feat: Agent Hub Phase 1 — inbox and projects"
