@@ -1,0 +1,69 @@
+services:
+  nextcloud-db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    volumes:
+      - db_data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    networks:
+      - nextcloud_net
+
+  nextcloud-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - nextcloud_net
+
+  nextcloud-app:
+    image: nextcloud:29
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7200:80"
+    volumes:
+      - nextcloud_data:/var/www/html
+    environment:
+      MYSQL_HOST: nextcloud-db
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: cloud.olusion.net
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES}
+      REDIS_HOST: nextcloud-redis
+      OVERWRITEPROTOCOL: https
+      OVERWRITECLIURL: https://cloud.olusion.net
+    depends_on:
+      - nextcloud-db
+      - nextcloud-redis
+    networks:
+      - nextcloud_net
+
+  nextcloud-mcp:
+    image: ${NEXTCLOUD_MCP_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      NEXTCLOUD_URL: https://cloud.olusion.net
+      NEXTCLOUD_USERNAME: ${NEXTCLOUD_MCP_USER}
+      NEXTCLOUD_PASSWORD: ${NEXTCLOUD_APP_PASSWORD}
+      # EXCLUDED_TAGS: ${NEXTCLOUD_EXCLUDED_TAGS}
+    networks:
+      - nextcloud_net
+
+volumes:
+  db_data:
+  nextcloud_data:
+
+networks:
+  nextcloud_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16

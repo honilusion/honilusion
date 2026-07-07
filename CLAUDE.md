@@ -266,6 +266,8 @@ Files changed:
 | SearXNG (standalone) | 8080 | Separate instance |
 | ChromaDB | 8100 | Vector memory for Odysseus |
 | ntfy | 8091 | Notifications |
+| Nextcloud | 127.0.0.1:7200 | File cloud (private loopback; public via cloud.olusion.net) |
+| Nextcloud MCP | 127.0.0.1:8000 | MCP server for Nextcloud (private — never exposed publicly) |
 
 ### fileprep MCP tools
 - `preprocess_file` — process file, return Markdown
@@ -1132,3 +1134,58 @@ git push origin honilusion-main
 ```
 
 Never work directly on `main` — that branch tracks upstream.
+
+---
+
+## Nextcloud Infrastructure Stack (2026-07-07)
+
+### Stack location
+`/home/olusion/nextcloud/` — live files (outside the odysseus repo).
+Reference copies for version control: `odysseus/infra/nextcloud/`.
+
+### Services (docker-compose.yml)
+| Service | Image | Purpose |
+|---|---|---|
+| `nextcloud-db` | `mariadb:10.11` | MariaDB database for Nextcloud |
+| `nextcloud-redis` | `redis:7-alpine` | Redis cache for Nextcloud |
+| `nextcloud-app` | `nextcloud:29` | Nextcloud web app — loopback port `127.0.0.1:7200:80` |
+| `nextcloud-mcp` | `${NEXTCLOUD_MCP_IMAGE}` | MCP server for Nextcloud — loopback port `127.0.0.1:8000:8000` |
+
+Network: `nextcloud_net` (`172.22.0.0/16`). Volumes: `db_data`, `nextcloud_data`.
+
+**The `nextcloud_net` Docker network is created by this stack** and must exist before any
+Odysseus-side nextcloud integration containers are started.
+
+### Public / private split
+- `cloud.olusion.net` (HTTPS) — public web UI, proxied by Nginx from `127.0.0.1:7200`
+- `127.0.0.1:8000` — MCP server, private loopback only, never exposed via Nginx
+
+### Nginx vhost footgun: client_max_body_size belongs in the 443 block
+`client_max_body_size 10G` is in the 443 server block, NOT the 80 redirect block.
+Pre-certbot: the 443 block uses bare `listen 443;` (no ssl keyword) so `nginx -t` passes
+without certs. After `certbot --nginx -d cloud.olusion.net`, certbot adds `ssl` and the cert
+directives to that same `listen` line; the 10G limit stays in the right block.
+**If you ever regenerate the vhost from scratch, always put client_max_body_size in the 443 block.**
+
+### TRUSTED_PROXIES reconciliation
+After `docker compose up -d`, run:
+```bash
+docker network inspect nextcloud_nextcloud_net | grep Subnet
+```
+If the subnet shown differs from `172.22.0.0/16`, update `TRUSTED_PROXIES` in `.env` and
+re-up `nextcloud-app` (`docker compose up -d nextcloud-app`).
+
+### Charles-only steps (required before stack can run)
+1. Create `.env` from template: `cd /home/olusion/nextcloud && cp .env.template .env && chmod 600 .env`
+2. Fill all `CHANGEME_*` values in `.env` (DB passwords, admin password, app password, MCP image)
+3. Install nginx vhost: `sudo cp /home/olusion/nextcloud/nextcloud.nginx.conf /etc/nginx/sites-available/nextcloud`
+4. Enable vhost: `sudo ln -s /etc/nginx/sites-available/nextcloud /etc/nginx/sites-enabled/nextcloud`
+5. Validate: `sudo nginx -t`
+6. Run certbot: `sudo certbot --nginx -d cloud.olusion.net`
+7. Bring up stack: `docker compose up -d nextcloud-db nextcloud-redis nextcloud-app`
+8. Verify `nextcloud_net` created: `docker network ls | grep nextcloud`
+9. Web UI setup: log in as admin, create `odysseus-agent` user, generate app password, create `agent-hidden` tag
+10. Fill `NEXTCLOUD_APP_PASSWORD` and `NEXTCLOUD_MCP_USER` in `.env`, then: `docker compose up -d nextcloud-mcp`
+
+### Recent Builds
+- **2026-07-07** — Staged infra files: `docker-compose.yml`, `.env.template`, nginx vhost. `nginx -t` deferred to Charles (sudo required). Stack NOT yet running — awaiting `.env`, certbot, and manual web UI steps.
