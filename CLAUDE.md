@@ -1149,7 +1149,7 @@ Reference copies for version control: `odysseus/infra/nextcloud/`.
 | `nextcloud-db` | `mariadb:10.11` | MariaDB database for Nextcloud |
 | `nextcloud-redis` | `redis:7-alpine` | Redis cache for Nextcloud |
 | `nextcloud-app` | `nextcloud:29` | Nextcloud web app — loopback port `127.0.0.1:7200:80` |
-| `nextcloud-mcp` | `${NEXTCLOUD_MCP_IMAGE}` | MCP server for Nextcloud — loopback port `127.0.0.1:8000:8000` |
+| `nextcloud-mcp` | `ghcr.io/cbcoutinho/nextcloud-mcp-server:latest` | MCP server for Nextcloud — loopback port `127.0.0.1:8000:8000` |
 
 Network: `nextcloud_net` (`172.22.0.0/16`). Volumes: `db_data`, `nextcloud_data`.
 

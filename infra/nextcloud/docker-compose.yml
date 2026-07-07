@@ -45,7 +45,7 @@ services:
       - nextcloud_net
 
   nextcloud-mcp:
-    image: ${NEXTCLOUD_MCP_IMAGE}
+    image: ghcr.io/cbcoutinho/nextcloud-mcp-server:latest
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
